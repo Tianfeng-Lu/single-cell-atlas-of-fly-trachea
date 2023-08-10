@@ -1,0 +1,77 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+## 读取原始数据
+```{r}
+source("../scatlas/tianfengRwrappers.R")
+library(DESeq2)
+setwd("/home/lutianfeng/single cell-atlas of fly trachea/ASP_bulkRNAseq")
+
+ASP_data <- read_matrix("./featurecounts of ASP.csv")
+tr_data <- read_matrix("./tr.csv")
+intersect(rownames(ASP_data), rownames(tr_data))
+ori_datatrix <- merge(ASP_data, tr_data, by = "row.names")
+head(ori_datatrix)
+write.csv(ori_datatrix, "ASPandTr.csv", row.names = F)
+
+ori_datatrix <- read_matrix("./ASPandtr45.csv") #要改一下第一列的名称为Geneid
+grouping_file <- make_grouping_file(ori_datatrix,c("ASP","ASP","ASP","ASP","pro","pro","pro","pro","pro","pro","pro","pro"))
+dataset <- prefilter(ori_datatrix)
+dmatrix <- make_dds(dataset,grouping_file)
+analyseddata <- DESeq(dmatrix)
+quality_control(analyseddata)
+normalized_counts <- counts(analyseddata, normalized = TRUE)[,1:4] # 得到标准化后的counts
+write.csv(normalized_counts, file = "aspvstr_normalized_counts.csv")
+```
+
+# only tr45
+```{r}
+tr_data <- read_matrix("./tr.csv")
+grouping_file <- make_grouping_file(tr_data,c("pro","pro","pro","pro","pro","pro","pro","pro"))
+
+dataset <- prefilter(tr_data)
+dmatrix <- DESeqDataSetFromMatrix(
+        countData = dataset, colData = grouping_file,
+        design = ~1) # design ~1 表示没有比较
+analyseddata <- DESeq(dmatrix)
+quality_control(analyseddata)
+normalized_counts <- counts(analyseddata, normalized = TRUE)[,1:8]
+write.csv(normalized_counts, file = "Tr45_normalized_counts.csv")
+```
+
+
+## fundmental step
+### 生成差异表达基因表
+```{r}
+filename <- "Pro vs Asp.csv"
+#contrast输入的右边是ctrl
+res <- results(analyseddata,contrast=c("Condition","pro","ASP"))
+write.csv(as.data.frame(res),file=filename)
+vo_plot(filename)
+heat_map()
+```
+
+```{r}
+ori_datatrix <- read_matrix("./featurecounts of ASP.csv")
+grouping_file <- make_grouping_file(ori_datatrix,c("ASP","ASP","ASP","notch","notch","notch"))
+dataset <- prefilter(ori_datatrix)
+dmatrix <- make_dds(dataset,grouping_file)
+analyseddata <- DESeq(dmatrix)
+quality_control(analyseddata)
+
+normalized_counts <- counts(analyseddata, normalized = TRUE)[,1:3] # 得到标准化后的counts
+write.csv(normalized_counts, file = "notchdataset_normalized_counts.csv")
+
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

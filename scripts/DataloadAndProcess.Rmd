@@ -1,0 +1,91 @@
+---
+title: "Dataload and process"
+output: html_notebook
+---
+
+# First part
+## data filter and normalization
+
+```{r setup, include=FALSE}
+getwd()
+knitr::opts_knit$set(root.dir = "/home/zju/tianfeng/single_cell_atlas")
+# setwd("/home/zju/tianfeng/single_cell_atlas")
+# getwd()
+```
+
+
+```{r}
+source("./utils/tianfengRwrappers.R")
+```
+
+
+# From cellranger
+## QC
+```{r fig.width=4, fig.height=10}
+fly_merge <- CreateSeuratObject(Read10X("./raw_data_file/fly_merge/"), names.field = 2, names.delim = "-", project = "fly_merge", min.cells = 10, min.features = 200)
+
+fly_merge <- PercentageFeatureSet(fly_merge, pattern = "^mt:", col.name = "percent.mt")
+
+VlnPlot(fly_merge,c("percent.mt"))/
+VlnPlot(fly_merge,c("nFeature_RNA"))/
+VlnPlot(fly_merge,c("nCount_RNA"))
+
+fly_merge <- subset(fly_merge, subset = nFeature_RNA > 300 & nFeature_RNA < 4000 & 
+        nCount_RNA > 1000 &  nCount_RNA < 20000 & percent.mt < 10)
+```
+
+```{r fig.width=12, fig.height=6}
+fly_merge <- fly_merge %>% SCTransform(vars.to.regress = "percent.mt", verbose = F) %>% 
+  RunPCA() %>% FindNeighbors(dims = 1:20) %>% 
+  RunUMAP(dims = 1:20) %>% 
+  FindClusters(resolution = 0.1)
+
+table(fly_merge$orig.ident)
+
+# saveRDS(fly_merge,"./processed_data_file/fly_merge.rds")
+```
+
+```{r}
+trachea <- subset(fly_merge, idents = c(0:3,6:8))
+trachea <- trachea %>% 
+  RunPCA() %>% FindNeighbors(dims = 1:20) %>% 
+  RunUMAP(dims = 1:20)
+DimPlot(trachea, cells.highlight = WhichCells(larva))
+trachea <- trachea %>% FindClusters(resolution = 0.2)
+
+trachea$ctrl_idents <- larva$seurat_clusters
+fly_merge$ctrl_idents <- larva$seurat_clusters
+
+ctrl <- subset(fly_merge_filtered, orig.ident == 1)
+# saveRDS(ctrl,"./processed_data_file/ctrl.rds")
+
+HSD <- subset(fly_merge_filtered, orig.ident == 2 | orig.ident == 3)
+# saveRDS(HSD,"./processed_data_file/HSD.rds")
+
+```
+
+
+# run harmony
+```{r}
+library(harmony)
+umapplot(trachea, split.by = "orig.ident")
+
+
+trachea_harmony <- RunHarmony(trachea, "orig.ident", plot_convergence = T, project.dim = F, assay.use = "SCT")
+trachea_harmony@reductions[["pca"]] <- trachea_harmony@reductions[["harmony"]]
+
+
+trachea_harmony <- trachea_harmony %>% RunUMAP(dims = 1:20)
+trachea_harmony <- FindClusters(trachea_harmony, resolution = 0.25)
+umapplot(trachea_harmony)
+umapplot(trachea_harmony, group.by = "ctrl_idents")
+# saveRDS(fly_merge_harmony,"./processed_data_file/fly_merge_harmony.rds") #已经经过分组处理了
+```
+
+```{r}
+ctrl_filtered <- NormalizeData(ctrl_filtered, assay = "RNA") %>% ScaleData(assay = "RNA")
+HSD_filtered <- NormalizeData(HSD_filtered, assay = "RNA") %>% ScaleData(assay = "RNA")
+```
+
+## END ##
+celltype annotation

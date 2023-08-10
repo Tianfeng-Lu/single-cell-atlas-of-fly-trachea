@@ -1,0 +1,495 @@
+---
+title: "Time Differential Analysis for Smart-seq"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/home/zju/tianfeng/single_cell_atlas")
+```
+
+# 使用Deseq2和Mfuzz分析WT果蝇气管干细胞在L3，APF0h，APF2h的基因表达模式.
+
+```{r}
+suppressMessages(library(DESeq2))
+suppressMessages(library(clusterProfiler))
+suppressMessages(library(Mfuzz))
+suppressMessages(library(IDPmisc))
+suppressMessages(library(ggplot2))
+suppressMessages(library(ggrepel))
+suppressMessages(library(dplyr))
+suppressMessages(library(ggpubr))
+suppressMessages(library(Rmisc))
+```
+
+```{r}
+#return differently expressed genes
+DEGs <- function(file_name,FC=3,padj=0.001)
+{
+  sf<-as.data.frame(read.csv(file_name))
+  sf$threshold = factor(ifelse(sf$padj < padj & abs(sf$log2FoldChange) >= FC, 
+                              ifelse(sf$log2FoldChange>= FC ,'Up','Down'),'NoSignifi'),
+                       levels=c('Up','Down','NoSignifi'))
+
+  orderedsf<-sf[order(sf$log2FoldChange),]  
+
+  upgene<-sf$X[which(sf$threshold=="Up")]
+  downgene<-sf$X[which(sf$threshold=="Down")]
+  res = list(upgene,downgene)
+  return(res)
+}
+
+mytheme2 <- theme(plot.title = element_text(size = 15,color="black",hjust = 0.5),
+                 axis.title = element_text(size = 15,color ="black"), 
+                 axis.text.x = element_text(size = 15,color = "black"),
+                 axis.text.y = element_text(size = 15,color = "black"),
+                 panel.background = element_rect(fill = "white"),
+                 panel.grid.minor.y = element_blank(),
+                 panel.grid.minor.x = element_blank(),
+                 panel.grid=element_blank(),
+                 legend.position = "bottom",
+                 legend.text = element_text(size= 15),
+                 legend.title= element_text(size= 15)) 
+```
+
+
+# 此代码在输出DEGslist到RcisTarget过程中复用
+```{r}
+
+res1 <- DEGs("./processed_data_file/smartseq/L3 vs 0h.csv",FC = 1,padj = 0.01) 
+#1.2倍改变，0.3的padj,FC = 0.26,padj = 0.3
+
+res2 <- DEGs("./processed_data_file/smartseq/0h vs 2h.csv",FC = 1,padj = 0.01)
+
+# 从DEGs返回的列表[上调基因，下调基因]中取出差异基因列表
+# 上调基因：0h < 2h, L3 < 0h, FC>0 为上调
+upgene_1 <- res1[1]
+upgene_2 <- res2[1]
+downgene_1 <- res1[2]
+downgene_2 <- res2[2]
+
+#对这些差异基因取并集，得到合并之后的差异表达基因
+#（至少在L3->APF0h或0h->2h的一个过程中差异表达的基因）
+merged_DEGslist = Reduce(union,c(upgene_1,downgene_1,upgene_2,downgene_2))
+
+#输出差异基因列表，复制之后使用flybase的批量下载功能获得注释
+write.csv(merged_DEGslist,"./data_tables/smartseq/DEGslist.csv",row.names = FALSE, quote = FALSE)
+
+#下面的代码是给RcisTarget的输入基因列表
+write.csv(upgene_1,"./data_tables/smartseq/1_up_DEGslist.csv",row.names = FALSE, quote = FALSE)
+write.csv(upgene_2,"./data_tables/smartseq/2_up_DEGslist.csv",row.names = FALSE, quote = FALSE)
+write.csv(downgene_1,"./data_tables/smartseq/1_down_DEGslist.csv",row.names = FALSE, quote = FALSE)
+write.csv(downgene_2,"./data_tables/smartseq/2_down_DEGslist.csv",row.names = FALSE, quote = FALSE)
+```
+
+## 绘制指定基因的表达
+### 使用normalized counts
+```{r}
+## 先转换为矩阵 melt对矩阵和df有不一样的方法
+normalized_counts <- read.csv("./processed_data_file/smartseq/normalized_counts.csv",row.names = 1) %>% as.matrix()
+# normalized_counts <- counts(analyseddata, normalized=TRUE)  #得到标准化后的counts
+colnames(normalized_counts) 
+colnames(normalized_counts) <- c("L3","L3","L3","L3","0h","0h","0h","0h","2h","2h","2h","2h") # analysis data提取的列顺序不一样
+
+ltable <- reshape2::melt(normalized_counts,)
+colnames(ltable) <- c("gene","type","expression")
+
+## 折线图
+### 误差线为+- SE
+for(gene in c("fng", "ttv", "sotv", "botv","O-fut1")){
+  
+selected_gene <- ltable[ltable$gene==gene,] %>% summarySE(measurevar="expression",groupvars = "type")
+ggobj <- ggplot(selected_gene,aes(x=type,y=expression))+ geom_point(color="black")+geom_path(aes(group=1))+geom_errorbar(aes(ymin=expression-se,ymax=expression+se),width=0.15) + theme_classic()+mytheme2+ggtitle(gene)
+ggsave(paste0("./figures/PC_smartseq/",gene,".tiff"),plot = ggobj,device = "tiff",height = 4,width = 6,dpi=300)
+
+}
+
+```
+
+
+# GO and KEGG 分析
+```{r}
+res1 <- DEGs("L3 vs 0h.csv",FC = 1,padj = 0.01) 
+upgene_1 <- res1[1]
+downgene_1 <- res1[2]
+
+library(org.Dm.eg.db)
+library(clusterProfiler)
+
+#ID转换
+# genes <- bitr(merged_DEGslist, fromType="SYMBOL",toType=c("ENTREZID","ENSEMBL"),
+                 # OrgDb = org.Dm.eg.db)
+genes <- bitr(upgene_1[[1]] ,fromType="SYMBOL",toType=c("ENTREZID","ENSEMBL"),
+                 OrgDb = org.Dm.eg.db)
+
+
+enrich.go <- enrichGO(gene = genes$ENTREZID, #基因列表文件中的基因名称
+                        OrgDb = org.Dm.eg.db,
+                        keyType = 'ENTREZID',
+                        ont = 'BP', #可选 BP、MF、CC，也可以指定 ALL 同时计算 3 者
+                        pAdjustMethod = 'fdr', 
+                        pvalueCutoff = 0.01, 
+                        qvalueCutoff = 0.2, 
+                        readable = TRUE)
+
+new_enrich <- enrich.go
+new_enrich@result <- new_enrich@result[c("GO:0045216","GO:0051130","GO:0006486","GO:0043413","GO:0032970","GO:0070085","GO:0022604","GO:0090130"),]%>% arrange(desc(Count)) # 绘制指定的通路
+
+ggobj <- barplot(new_enrich,title = "selected_pathways",showCategory = 10) 
+ggobj+theme(text = element_text(colour = "black", size = 16),                                  plot.title = element_text(size = 16,color="black",hjust = 0.5),                                axis.title = element_text(size = 16,color ="black"),                                  axis.text = element_text(size = 16,color = "black"),
+            panel.grid = element_blank())
+
+dotplot(enrich.go)
+cnetplot(enrich.go)
+# write.csv(enrich.go@result,file = "L3 vs 0h up GO.csv")
+```
+
+
+
+
+1
+delete L3-1,0h-3,2h-1
+```{r}
+ori_datatrix<-read_matrix("ddd.csv")
+grouping_file<-make_grouping_file(ori_datatrix,c("L3","L3","L3","L3","0h","0h","0h","0h","2h","2h","2h","2h"))
+dataset<-prefilter(ori_datatrix)
+
+grouping_file<-make_grouping_file(datatrix,c("L3","L3","L3","0h","0h","0h","2h","2h","2h"))
+dataset<-prefilter(datatrix)
+dmatrix<-make_dds(dataset,grouping_file,Condition)
+analyseddata <- DESeq(dmatrix)
+normalized_counts <- counts(analyseddata, normalized=TRUE)  #得到标准化后的counts
+# write.csv(normalized_counts,file = "normalized_counts.csv")
+quality_control(analyseddata)
+selectedgenes <- assay(vsdtrans)[TFs,]
+pheatmap(selectedgenes,display_numbers = FALSE,number_color = 
+          "black",cluster_rows=FALSE,cluster_cols=FALSE,scale="row")
+```
+
+
+
+L3 vs 0h
+```{r}
+filename <- "1_L3 vs 0h.csv"
+res <- results(analyseddata,contrast=c("Condition","0h","L3"))
+write.csv(as.data.frame(res),file=filename)
+vo_plot(filename)
+heat_map()
+```
+0h vs 2h
+```{r}
+filename <- "1_0h vs 2h.csv"
+res <- results(analyseddata,contrast=c("Condition","2h","0h"))
+write.csv(as.data.frame(res),file=filename)
+vo_plot(filename)
+res1 <- DEGs(filename)
+heat_map()
+```
+
+```{r}
+filename <- "1_all.png"
+# print venn plot
+suppressMessages(library(VennDiagram))
+suppressMessages(library(EBImage))
+res1 <- DEGs("1_L3 vs 0h.csv",FC = 0.5,padj = 0.05)
+res2 <- DEGs("1_0h vs 2h.csv",FC = 0.5,padj = 0.05)
+upgene_1 <- res1[1]
+upgene_2 <- res2[1]
+downgene_1 <- res1[2]
+downgene_2 <- res2[2]
+
+DEGslist = c(upgene_1,downgene_1,upgene_2,downgene_2)
+merged_DEGslist = Reduce(union,c(upgene_1,downgene_1,upgene_2,downgene_2))
+write.csv(merged_DEGslist,"DEGslist.csv",row.names = FALSE, quote = FALSE)
+names(DEGslist) = c("L3 to 0h_up","L3 to 0h_down","0h to 2h_up","0h to 2h_down")
+
+venn.diagram(DEGslist, 
+             filename = filename,imagetype = "png",
+             resolution = 400,fontfamily = "sans",
+             fill =brewer.pal(4, "Set3"),
+             alpha = 0.50)
+display(readImage(filename), method="raster")
+
+
+inter <- get.venn.partitions(DEGslist)
+filename <- "1_all.csv"
+for (i in 1:nrow(inter)) 
+  inter[i,'values'] <- paste(inter[[i,'..values..']], collapse = ', ')
+inter <- inter[-c(5, 6)]
+inter <- inter[which(inter$..count..>0),] 
+write.csv(inter, filename, row.names = FALSE, quote = FALSE)
+inter
+```
+
+## Mfuzz
+```{r}
+Genes_of_interest <- merged_DEGslist
+
+
+ori_datatrix<-read_matrix("ddd.csv")
+grouping_file<-make_grouping_file(ori_datatrix,c("L3","L3","L3","L3","0h","0h","0h","0h","2h","2h","2h","2h"))
+dataset<-prefilter(ori_datatrix)
+dmatrix<-make_dds(dataset,grouping_file,Condition)
+analyseddata <- DESeq(dmatrix)
+
+normalized_counts <- counts(analyseddata, normalized=TRUE) 
+write.csv(normalized_counts,file = "normalized_counts.csv")
+
+quality_control(analyseddata)
+selectedgenes <- assay(vsdtrans)[Genes_of_interest,]
+pheatmap(selectedgenes,display_numbers = FALSE,number_color = 
+          "black",cluster_rows=FALSE,cluster_cols=FALSE,scale="row")
+
+
+rm(eset)
+DEGs_normalized_counts <- normalized_counts[Genes_of_interest,]
+eset <- matrix()
+eset <- cbind(apply(DEGs_normalized_counts[,1:4],1,mean,na.rm=T),
+              apply(DEGs_normalized_counts[,5:8],1,mean,na.rm=T),
+              apply(DEGs_normalized_counts[,9:12],1,mean,na.rm=T))
+colnames(eset) <- c("L3","0h","2h") #要对一个时间内的所有三个样本做平均
+eset <- new('ExpressionSet',exprs = eset) 
+eset <- filter.std(eset, min.std = 0)
+
+
+seset <- standardise(eset)
+set.seed(17) #软聚类
+cl <- mfuzz(seset, 6, mestimate(eset)) #第二个参数是聚类个数，第三个是模糊化参数fuzzification parameter.
+
+mfuzz.plot(seset, cl = cl, mfrow = c(2, 3), colo = palette(rainbow(12)),time.labels = seq(0,4,2), min.mem=0.1,new.window=FALSE)
+```
+
+
+
+```{r}
+cl$size
+cluster_result <- data.frame(cl$cluster) %>% arrange(cl.cluster)
+write.csv(cluster_result,"mfuzz_result.csv")
+
+
+
+cluster_genename <- function(clusterlist){
+  genename <- colnames(data.frame(as.list(clusterlist)))
+  lapply(genename, function(s){sub(".",replacement = "-",s,fixed = T)}) %>% as.character()
+}
+
+
+nm <- cluster_genename(cl$cluster[cl$cluster == 1])
+tt <- c("trh","mirr")
+```
+
+
+```{r}
+selectedgenes <- assay(vsdtrans)[
+                  intersect(rownames(cluster_result),rownames(assay(vsdtrans))),]
+pheatmap(selectedgenes,display_numbers = FALSE,number_color = 
+          "black",cluster_rows=FALSE,cluster_cols=FALSE,scale="row",show_rownames=F)
+```
+## 分析每个cluster的基因
+```{r}
+genes <- bitr(cluster_genename(cl$cluster[cl$cluster == 3]) ,fromType="SYMBOL",toType=c("ENTREZID","ENSEMBL"),
+              OrgDb = org.Dm.eg.db)
+
+enrich.go <- enrichGO(gene = genes$ENTREZID, #基因列表文件中的基因名称
+                        OrgDb = org.Dm.eg.db,
+                        keyType = 'ENTREZID',
+                        ont = 'BP', #可选 BP、MF、CC，也可以指定 ALL 同时计算 3 者
+                        pAdjustMethod = 'fdr', 
+                        pvalueCutoff = 0.01, 
+                        qvalueCutoff = 0.2, 
+                        readable = TRUE)
+
+
+dotplot(enrich.go,title = "Cluster3 genes",showCategory = 20)
+dotplot(enrich.go)
+cnetplot(enrich.go)
+# write.csv(enrich.go@result,file = "cluster3 mufzz gene.csv")
+```
+
+
+
+
+delete 2h-2 0h-3 L3-1
+```{r}
+datatrix <- ori_datatrix[,-which(colnames(ori_datatrix) %in%  
+                                c("X0h.T5.3","C.L3.T5.1","X2h.T5.2"))]
+grouping_file<-make_grouping_file(datatrix,c("0h","0h","0h","2h","2h","2h","L3","L3","L3"))
+dataset<-prefilter(datatrix)
+dmatrix<-make_dds(dataset,grouping_file,Condition)
+analyseddata <- DESeq(dmatrix)
+quality_control(analyseddata)
+```
+L3 vs 0h
+```{r}
+filename <- "2_L3 vs 0h.csv"
+res <- results(analyseddata,contrast=c("Condition","0h","L3"))
+write.csv(as.data.frame(res),file=filename)
+vo_plot(filename)
+heat_map()
+```
+0h vs 2h
+```{r}
+filename <- "2_0h vs 2h.csv"
+res <- results(analyseddata,contrast=c("Condition","2h","0h"))
+write.csv(as.data.frame(res),file=filename)
+vo_plot(filename)
+res1 <- DEGs(filename)
+heat_map()
+```
+
+```{r}
+filename <- "2_all.png"
+# print venn plot
+res1 <- DEGs("2_L3 vs 0h.csv",FC = 0.5,padj = 0.05)
+res2 <- DEGs("2_0h vs 2h.csv",FC = 0.5,padj = 0.05)
+upgene_1 <- res1[1]
+upgene_2 <- res2[1]
+downgene_1 <- res1[2]
+downgene_2 <- res2[2]
+
+DEGslist = c(upgene_1,downgene_1,upgene_2,downgene_2)
+names(DEGslist) = c("L3 to 0h_up","L3 to 0h_down","0h to 2h_up","0h to 2h_down")
+
+venn.diagram(DEGslist, 
+             filename = filename,imagetype = "png",
+             resolution = 400,fontfamily = "sans",
+             fill =brewer.pal(4, "Set3"),
+             alpha = 0.50)
+display(readImage(filename), method="raster")
+
+
+inter <- get.venn.partitions(DEGslist)
+filename <- "2_all.csv"
+for (i in 1:nrow(inter)) 
+  inter[i,'values'] <- paste(inter[[i,'..values..']], collapse = ', ')
+inter <- inter[-c(5, 6)]
+inter <- inter[which(inter$..count..>0),] 
+write.csv(inter, filename, row.names = FALSE, quote = FALSE)
+inter
+```
+
+delete 2h-3 0h-3 L3-1
+```{r}
+datatrix <- ori_datatrix[,-which(colnames(ori_datatrix) %in%  
+                                c("X0h.T5.3","C.L3.T5.1","X2h.T5.3"))]
+grouping_file<-make_grouping_file(datatrix,c("0h","0h","0h","2h","2h","2h","L3","L3","L3"))
+dataset<-prefilter(datatrix)
+dmatrix<-make_dds(dataset,grouping_file,Condition)
+analyseddata <- DESeq(dmatrix)
+quality_control(analyseddata)
+```
+L3 vs 0h
+```{r}
+filename <- "3_L3 vs 0h.csv"
+res <- results(analyseddata,contrast=c("Condition","0h","L3"))
+write.csv(as.data.frame(res),file=filename)
+vo_plot(filename)
+heat_map()
+```
+0h vs 2h
+```{r}
+filename <- "3_0h vs 2h.csv"
+res <- results(analyseddata,contrast=c("Condition","2h","0h"))
+write.csv(as.data.frame(res),file=filename)
+vo_plot(filename)
+res1 <- DEGs(filename)
+heat_map()
+```
+
+```{r}
+filename <- "3_all.png"
+# print venn plot
+res1 <- DEGs("3_L3 vs 0h.csv",FC = 0.5,padj = 0.05)
+res2 <- DEGs("3_0h vs 2h.csv",FC = 0.5,padj = 0.05)
+upgene_1 <- res1[1]
+upgene_2 <- res2[1]
+downgene_1 <- res1[2]
+downgene_2 <- res2[2]
+
+DEGslist = c(upgene_1,downgene_1,upgene_2,downgene_2)
+names(DEGslist) = c("L3 to 0h_up","L3 to 0h_down","0h to 2h_up","0h to 2h_down")
+
+venn.diagram(DEGslist, 
+             filename = filename,imagetype = "png",
+             resolution = 400,fontfamily = "sans",
+             fill =brewer.pal(4, "Set3"),
+             alpha = 0.50)
+display(readImage(filename), method="raster")
+
+
+inter <- get.venn.partitions(DEGslist)
+filename <- "3_all.csv"
+for (i in 1:nrow(inter)) 
+  inter[i,'values'] <- paste(inter[[i,'..values..']], collapse = ', ')
+inter <- inter[-c(5, 6)]
+inter <- inter[which(inter$..count..>0),] 
+write.csv(inter, filename, row.names = FALSE, quote = FALSE)
+inter
+```
+
+delete 2h-4 0h-3 L3-1
+```{r}
+datatrix <- ori_datatrix[,-which(colnames(ori_datatrix) %in%  
+                                c("X0h.T5.3","C.L3.T5.1","X2h.T5.4"))]
+grouping_file<-make_grouping_file(datatrix,c("0h","0h","0h","2h","2h","2h","L3","L3","L3"))
+dataset<-prefilter(datatrix)
+dmatrix<-make_dds(dataset,grouping_file,Condition)
+analyseddata <- DESeq(dmatrix)
+quality_control(analyseddata)
+```
+L3 vs 0h
+```{r}
+filename <- "4_L3 vs 0h.csv"
+res <- results(analyseddata,contrast=c("Condition","0h","L3"))
+write.csv(as.data.frame(res),file=filename)
+vo_plot(filename)
+heat_map()
+```
+0h vs 2h
+```{r}
+filename <- "4_0h vs 2h.csv"
+res <- results(analyseddata,contrast=c("Condition","2h","0h"))
+write.csv(as.data.frame(res),file=filename)
+vo_plot(filename)
+res1 <- DEGs(filename)
+heat_map()
+```
+
+```{r}
+filename <- "4_all.png"
+# print venn plot
+
+res1 <- DEGs("4_L3 vs 0h.csv",FC = 0.5,padj = 0.05)
+res2 <- DEGs("4_0h vs 2h.csv",FC = 0.5,padj = 0.05)
+upgene_1 <- res1[1]
+upgene_2 <- res2[1]
+downgene_1 <- res1[2]
+downgene_2 <- res2[2]
+
+DEGslist = c(upgene_1,downgene_1,upgene_2,downgene_2)
+names(DEGslist) = c("L3 to 0h_up","L3 to 0h_down","0h to 2h_up","0h to 2h_down")
+
+venn.diagram(DEGslist, 
+             filename = filename,imagetype = "png",
+             resolution = 400,fontfamily = "sans",
+             fill =brewer.pal(4, "Set3"),
+             alpha = 0.50)
+display(readImage(filename), method="raster")
+
+
+inter <- get.venn.partitions(DEGslist)
+filename <- "4_all.csv"
+for (i in 1:nrow(inter)) 
+  inter[i,'values'] <- paste(inter[[i,'..values..']], collapse = ', ')
+inter <- inter[-c(5, 6)]
+inter <- inter[which(inter$..count..>0),] 
+write.csv(inter, filename, row.names = FALSE, quote = FALSE)
+inter
+```
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

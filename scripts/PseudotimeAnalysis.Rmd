@@ -1,0 +1,317 @@
+---
+title: "Pseudotime analysis"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+
+```{r setup, include=FALSE}
+getwd()
+knitr::opts_knit$set(root.dir = "/home/zju/tianfeng/single_cell_atlas")
+# setwd("/home/zju/tianfeng/single_cell_atlas")
+# getwd()
+```
+
+
+```{r}
+library(dplyr)
+library(Seurat)
+library(SeuratWrappers)
+library(monocle3)
+```
+
+
+# 载入数据转换成cds对象
+```{r}
+fly_merge_filtered <- readRDS("./processed_data_file/fly_merge_filtered.rds")
+
+#cl68 <- subset(x = cl68,idents = c(6,8),invert = FALSE )
+ctrl_filtered <- subset(fly_merge_filtered,orig.ident==1) ## ctrl only
+HSD_filtered <- subset(fly_merge_filtered,orig.ident==1,invert=T) ## HSD only
+PC_DB_DT <- subset(ctrl_filtered, idents=c("PC","DB","DT"))
+# 
+# expression <- GetAssayData(fly_merge_filtered, assay = "RNA", slot = 'counts')
+# cell_metadata <- fly_merge_filtered@meta.data
+# gene_annotation <- data.frame(gene_short_name = rownames(expression))
+# rownames(gene_annotation) <- rownames(expression)
+# cds2 <- new_cell_data_set(expression, cell_metadata = cell_metadata, gene_metadata = gene_annotation)
+
+
+cds <- as.cell_data_set(PC_DB_DT)
+
+cds <-  reduce_dimension(cds)
+
+cds@int_colData@listData[["reducedDims"]]@listData[["PCA"]] <- PC_DB_DT@reductions[["pca"]]@cell.embeddings
+cds@int_colData@listData[["reducedDims"]]@listData[["UMAP"]] <- PC_DB_DT@reductions[["umap"]]@cell.embeddings
+rowData(cds)$gene_short_name <- row.names(rowData(cds))
+colData(cds)@listData[["seurat_clusters"]] <- PC_DB_DT@active.ident
+cds@clusters@listData[["UMAP"]][["clusters"]] <- PC_DB_DT@active.ident
+cds@clusters@listData[["UMAP"]][["partitions"]] <-  PC_DB_DT@active.ident
+
+```
+
+# run Monocle3
+```{r labelplot}
+cds <- cluster_cells(cds,resolution = 1e-5)
+
+plot_cells(cds, label_cell_groups=TRUE, cell_size = 0.5,labels_per_group = 2,label_groups_by_cluster = FALSE, color_cells_by="seurat_clusters", show_trajectory_graph = F,group_label_size = 5)
+
+cds <- learn_graph(cds,use_partition = F)
+
+plot_cells(cds, label_cell_groups=TRUE, cell_size = 1, color_cells_by="partition", 
+           group_cells_by="partition",show_trajectory_graph = F)
+
+plot_cells(cds, genes=c("Osi20", "kni"),show_trajectory_graph = F)
+
+# saveRDS(cds,"./processed_data_file/ctrl_cds.rds")
+saveRDS(cds,"./processed_data_file/PC_DB_DT_cds.rds")
+
+# 选择细胞亚群
+cds <- choose_cells(cds)
+
+# 选择root
+cds <- order_cells(cds)
+
+plot_cells(cds,color_cells_by="pseudotime", cell_size=1, label_roots = T, label_leaves = T)
+```
+
+# identify genes differentially regulated in pseudotime
+```{r}
+pr_test_res <- graph_test(cds, neighbor_graph="principal_graph", cores=8)
+pr_deg_ids <- row.names(subset(pr_test_res, q_value < 0.05))
+gene_module_df <- find_gene_modules(cds[pr_deg_ids,], resolution=0.001)
+names(gene_module_df)[1] <- "gene_short_name"
+pr_merge <- merge(pr_test_res, gene_module_df, by = "gene_short_name")
+pr_merge
+```
+
+# Find markers
+```{r, fig,height = 6,fig.width=8}
+#根据cluser寻找marker
+#也可以用partition指定更加粗糙的分类
+marker_res <- top_markers(cds, group_cells_by="cluster", reference_cells=1000, cores=8)
+top_specific_markers <- marker_res  %>%
+                            filter(fraction_expressing >= 0.10) %>%
+                            group_by(cell_group) %>%
+                            top_n(3, pseudo_R2)
+
+top_specific_marker_ids <- unique(top_specific_markers %>% pull(gene_id))
+plot_genes_by_group(cds,
+                    top_specific_marker_ids,
+                    group_cells_by="cluster",
+                    ordering_type="maximal_on_diag",
+                    max.size=3)
+plot_cells(cds, genes=c("kni"),show_trajectory_graph = F)
+
+```
+
+# 基因拟时表达
+```{r}
+
+  # cds = cds[, is.finite(colData(cds)$pseudotime)]
+  # cds_exprs <- SingleCellExperiment::logcounts(cds)
+  # # cds_exprs <- as.matrix(GetAssayData(larva,slot = "data"))
+  # cds_exprs <- reshape2::melt(round(as.matrix(cds_exprs)))
+
+
+
+#在每个细胞群中都根据pseudo_R2取出若干
+top_specific_markers <- marker_res  %>%
+                            filter(fraction_expressing >= 0.10) %>%
+                            group_by(cell_group) %>%
+                            top_n(10, pseudo_R2)
+write.csv(marker_res, "monocle_markers.csv",row.names = F)
+
+top_specific_marker_ids <- unique(top_specific_markers %>% pull(gene_id))
+#write.csv(top_specific_marker_ids, "top_specific_marker_ids.csv",row.names = F)
+saveRDS(top_specific_marker_ids,"top_specific_marker_ids.RDS")
+plot_genes_in_pseudotime(cds[head(top_specific_marker_ids),], color_cells_by="pseudotime",
+                              min_expr=0.5, ncol = 2)
+plot_genes_in_pseudotime(cds[head(top_specific_marker_ids),], color_cells_by="seurat_clusters",
+                              min_expr=0.5, ncol = 2)
+
+#trace('plot_genes_in_pseudotime', edit = T, where = asNamespace("monocle3"))
+
+
+
+
+# #3d umap
+# cds <- reduce_dimension(cds,max_components = 3,reduction_method = c("UMAP"))
+# plot_cells_3d(cds[head(top_specific_marker_ids),], dims=c(1,2,3),color_cells_by="seurat_clusters")
+# 
+# plot_cells_3d(cds[head(top_specific_marker_ids),], dims=c(1,2,3),color_cells_by = "nCount_RNA")
+```
+
+#提取回seurat
+```{r }
+pseudotime_table <- pseudotime(cds, reduction_method = 'UMAP')
+pseudotime_table <- pseudotime_table[rownames(PC_DB_DT@meta.data)] %>% data.frame()
+write.csv(pseudotime_table,"./data_tables/PC_DB_DT_pseudotime_table.csv")
+
+PC_DB_DT <- readRDS("./processed_data_file/PC_DB_DT_seurat.rds")
+#向seurat对象添加了新的feature: pseudotime
+PC_DB_DT$pseudotime <- pseudotime_table
+# saveRDS(PC_DB_DT,file = "./processed_data_file/PC_DB_DT_seurat.rds")
+PC_DB_DT@meta.data
+
+selected_gene <- FetchData(PC_DB_DT,vars = c("Tom","peb","pseudotime","celltype"))
+
+ggplot(selected_gene,aes(x=pseudotime)) + geom_smooth(aes(y = Tom), color = "black") + theme_classic() + ridgetheme + scale_y_continuous() + scale_color_manual(values = colors_list) + theme(legend.key.size = unit(1,"cm")) + guides(colour = guide_legend(override.aes = list(size=10)))
+
+ggplot(selected_gene,aes(x=pseudotime)) + geom_smooth(aes(y = peb), color = "black") + theme_classic() + ridgetheme + scale_y_continuous() + scale_color_manual(values = colors_list) + theme(legend.key.size = unit(1,"cm")) + guides(colour = guide_legend(override.aes = list(size=10)))
+```
+head 5
+AAACCCAAGGGCAGGA-6e574292__FCA58_Female_TracheaGFP_adult_5dWT_Kornberg_sample1 
+                                                           2251    4      17.778129 
+AAACCCACACGACGTC-6e574292__FCA58_Female_TracheaGFP_adult_5dWT_Kornberg_sample1 
+                                                            4072    7     20.802009 
+AAACCCAGTGAGATTA-6e574292__FCA58_Female_TracheaGFP_adult_5dWT_Kornberg_sample1 
+                                                             4965    9    23.269305 
+AAACCCATCGGTCTAA-6e574292__FCA58_Female_TracheaGFP_adult_5dWT_Kornberg_sample1 
+                                                             479   0      3.415503 
+AAACGAACATCGCTGG-6e574292__FCA58_Female_TracheaGFP_adult_5dWT_Kornberg_sample1 
+                                                              5082    9   23.646496 
+AAACGAATCTAGTCAG-6e574292__FCA58_Female_TracheaGFP_adult_5dWT_Kornberg_sample1 
+                                                            3859    7     20.678411 
+                                                                     
+```{r}
+PC_DB_DT <- NormalizeData(PC_DB_DT, assay = "RNA")
+PC_DB_DT@active.assay <- "RNA"
+daf <- FetchData(PC_DB_DT,vars =c("Tom","kni","bs","ct","peb","pseudotime","celltype"), slot='data')
+# df <- arrange(df,FB_score1,by_group = F)
+data <- cbind(daf,index = 1:nrow(df),cluster = Idents(PC_DB_DT))
+
+ggplot(data,aes(x=pseudotime)) + geom_point(aes(y = peb, color = cluster),alpha = 1) + geom_smooth(aes(y = peb), color = "red") + theme_classic() + ridgetheme + scale_color_manual(values = colors_list) + guides(colour = guide_legend(override.aes = list(size=10))) + ylim(0,NA)
+
+ggplot(data,aes(x=pseudotime)) + geom_point(aes(y = ct, color = cluster),alpha = 1) + geom_smooth(aes(y = peb), color = "green") + theme_classic() + ridgetheme + scale_color_manual(values = colors_list) + guides(colour = guide_legend(override.aes = list(size=10)))
+```
+
+```{r}
+df <- FetchData(PC_DB_DT,vars =  c("E(spl)m5-HLH","salm","E(spl)malpha-BFM","E(spl)mbeta-HLH","pseudotime","celltype"))
+# df <- arrange(df,FB_score1,by_group = F)
+data <- cbind(df,index = 1:nrow(df),cluster = Idents(PC_DB_DT))
+
+ggplot(data,aes(x=pseudotime)) + geom_point(aes(y = `salm`, color = cluster),alpha = 1) + geom_smooth(aes(y = `salm`), color = "red") + theme_classic() + ridgetheme + scale_color_manual(values = colors_list) + guides(colour = guide_legend(override.aes = list(size=10)))
+
+ggplot(data,aes(x=pseudotime)) + geom_point(aes(y = ct, color = cluster),alpha = 1) + geom_smooth(aes(y = peb), color = "green") + theme_classic() + ridgetheme + scale_color_manual(values = colors_list) + guides(colour = guide_legend(override.aes = list(size=10)))
+```
+                                                                    
+#作图
+```{r import,fig.height=6, fig.width=8}
+library(reshape2)
+library(ggplot2)
+library(ggridges) 
+library(viridis)
+library(hrbrthemes)
+```
+
+
+
+```{r functionset}
+#R的排序函数 order(), sort, rank()
+#根据每个细胞的pseudotime值分成若干bins
+
+make_bins <- function(cell.subset, nbins = 11)  
+{
+  ordered.cells <- BiocGenerics::rank(cell.subset$pseudotime)
+  bins <- c()
+  len <- length(cell.subset$pseudotime)
+  for (i in c(1:len)) {
+    bins[i] <- floor(ordered.cells[i]*nbins/len)  #创建一个长度为细胞数量的向量，存储每个细胞分别属于的拟时bin信息
+  }
+  Idents(cell.subset) <- as.factor(bins)
+  cell.subset$bins <- bins
+  return(cell.subset)
+}
+
+
+make_pseudotime_heatmap_bycells <- function(cell.subset,top_specific_marker_ids, topn_markers = 40){
+  
+  #根据细胞画图
+  DoHeatmap(cell.subset, features = head(top_specific_marker_ids,topn_markers),group.by = "bins")
+}
+
+#根据组平均画图
+#提取表达矩阵
+make_pseudotime_heatmap_average <- function(cell.subset,top_specific_marker_ids, topn_markers = 40)
+{
+  mat <- c()
+  #上述方法分出来的bins是从0开始的
+  for(j in c(0:(nbins-1)))
+  {
+    temp <- as.matrix(GetAssayData(cell.subset,slot = "scale.data")[,WhichCells(cell.subset,idents = c(j))])
+    mat <- cbind(mat,apply(temp,1,mean))
+  }
+  colnames(mat) <- as.factor(c(0:(nbins-1)))
+  
+  pheatmap::pheatmap(mat[head(top_specific_marker_ids,topn_markers),],cluster_cols=FALSE)
+  
+  draw <- CreateSeuratObject(mat)
+  #注意，R中的因子默认是ACSII编码顺序排序
+  Idents(draw) <- c(0:(nbins-1))
+  draw <- SetAssayData(draw,slot = "scale.data",as.matrix(GetAssayData(draw,slot = "data")))
+  DoHeatmap(subset(draw,idents = c(0:(nbins-1))), 
+            features = head(top_specific_marker_ids,topn_markers),draw.lines = F)
+}
+
+
+#绘制ridgeline plot
+#首先设置阈值来二值化对特定基因在每个细胞中是否表达
+#然后观察表达这个基因的细胞的拟时值分布
+
+get_draw <- function(seuobj, genelist, expr_threshold = 3){
+  scale_data <- seuobj@assays[["RNA"]]@scale.data
+  df <- c()
+  df$pseudotime <- NULL
+  df$gene <- NULL
+  for (gene in genelist){
+    candidate <- rownames(as.data.frame(scale_data[gene,][scale_data[gene,]>expr_threshold]))
+    temp <- as.data.frame(pseudotime[candidate])
+    colnames(temp) <- "pseudotime"
+    rownames(temp) <- NULL
+    temp$gene <- gene
+    df <- rbind(df,temp)
+  }
+  return(df)
+}
+```
+
+```{r PseudotimeAnalysis, fig.height=6, fig.width=8}
+#选取细胞亚群进行分析
+cell.subset <- subset(x = larva,idents = c("DT","SB"),invert = FALSE )
+nbins <-  15
+cell.subset <- make_bins(cell.subset,nbins)
+
+make_pseudotime_heatmap_bycells(cell.subset,top_specific_marker_ids,50)
+make_pseudotime_heatmap_average(cell.subset,top_specific_marker_ids,50)
+
+df <- get_draw(larva, genelist = c("Tom","bs"), expr_threshold = 3)
+
+ggplot(df, aes(x = pseudotime , y = gene , fill = gene)) +
+ ggridges::geom_density_ridges(alpha = 0.5,show.legend =T) + labs(title = 'DEGs with pseudotime')+
+ theme_ipsum() +  theme(legend.position="none", panel.spacing = unit(0.1, "lines"), strip.text.x = element_text(size = 8))
+
+ggplot(df, aes(x = pseudotime , y = gene , fill = ..x..))  +
+  geom_density_ridges_gradient(scale = 3, rel_min_height = 0.01,alpha = 0.5) +
+  scale_fill_viridis(name = pseudotime, option = "C") +
+  labs(title = 'DEGs with pseudotime') +
+  theme_ipsum() +
+    theme(
+      legend.position="none",
+      panel.spacing = unit(0.1, "lines"),
+      strip.text.x = element_text(size = 8)
+    )
+
+#FeaturePlot(larva,features = "bs")
+plot_genes_in_pseudotime(cds[head(top_specific_marker_ids),], color_cells_by="seurat_clusters",
+                              min_expr=NULL, ncol = 2)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

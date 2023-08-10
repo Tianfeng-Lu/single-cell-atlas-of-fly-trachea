@@ -1,0 +1,161 @@
+---
+title: "cell chat"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+getwd()
+knitr::opts_knit$set(root.dir = "/home/zju/tianfeng/single_cell_atlas")
+# setwd("/home/zju/tianfeng/single_cell_atlas")
+# getwd()
+```
+
+
+```{r}
+source("./utils/tianfengRwrappers.R")
+library(CellChat)
+```
+
+```{r}
+
+cellchatobj <- createCellChat(HSD_filtered)
+
+summary(cellchatobj)
+
+cellchatDB <- readRDS("./processed_data_file/fly_cellchatDB.rds")
+#cellchatDB_use <- subsetDB(cellchatDB,search = "Secreted Signaling")  #使用特定类型的配体受体相互关系
+
+#指定分析使用的daatbase
+cellchatobj@DB <- cellchatDB
+
+#节省计算成本
+cellchatobj <- subsetData(cellchatobj)
+
+cellchatobj <- identifyOverExpressedGenes(cellchatobj)
+cellchatobj <- identifyOverExpressedInteractions(cellchatobj)
+
+#使用蛋白质互作网络，根据基因间相互关系补充表达量
+# cellchatobj <- projectData(cellchatobj, PPI.human)
+
+#推断细胞间通信网络，不要使用并行计算！
+cellchatobj <- computeCommunProb(cellchatobj)
+
+#若细胞群中只有少数细胞出现联系(<10个)，则过滤掉它们
+cellchatobj <- filterCommunication(cellchatobj, min.cells = 0)
+
+#提取表达网络矩阵
+df.net <- subsetCommunication(cellchatobj)
+#df.net <- subsetCommunication(cellchatobj,source.use = c(5),target.use = c(4),signaling = c("WNT")) #指定分析的通路和细胞类群
+
+#推断信号通路
+cellchatobj <- computeCommunProbPathway(cellchatobj)
+
+#合并通信网络数据
+cellchatobj <- aggregateNet(cellchatobj)
+
+# saveRDS(cellchatobj,file = "cellchatobj.rds")
+```
+
+
+```{r}
+groupSize <- as.numeric(table(cellchatobj@idents))
+# par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(cellchatobj@net$count, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(cellchatobj@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+
+netVisual_chord_gene(cellchatobj, sources.use = c(1,3:7), targets.use = c(2), lab.cex = 1,legend.pos.y = 30, legend.pos.x = 5,thresh = 0.01)
+```
+
+
+```{r fig.width=2, fig.height=2}
+#指定pathway
+
+pathways.show <- c("NOTCH signaling pathway") 
+# Hierarchy plot
+
+
+netVisual_aggregate(cellchatobj, signaling = pathways.show, layout = "circle") %>% print()
+
+png("./figures/HSD_only/cellchat/NOTCH2.png", res=256, width = 1600, height = 1600)
+netVisual_heatmap(cellchatobj, signaling = pathways.show, color.heatmap = "Reds") %>% print()
+dev.off()
+
+#可视化单个配体受体对的影响
+netAnalysis_contribution(cellchatobj, signaling = pathways.show)
+
+# netVisual_bubble(cellchatobj, sources.use = 5, targets.use = c(1:7), remove.isolate = FALSE)
+```
+
+```{r}
+draw_data <- netVisual_bubble(cellchatobj, targets.use = 5, remove.isolate = T, return.data = T)
+
+ggobj <- ggplot(data = draw_data$communication) + 
+  geom_point(aes(x = source.target, y = interaction_name_2, size = prob, color = prob)) + 
+  theme(plot.title = element_text(size = 15,color="black",hjust = 0.5),
+        panel.background = element_rect(fill = "white",colour = "black"),
+        axis.title = element_text(size = 15,color ="black"), 
+        axis.text = element_text(size = 15,color = "black"),
+        axis.text.x = element_text(angle = 45, hjust = 1 ),
+        panel.grid = element_line(colour = "lightgrey"),
+        legend.position = "left",
+        legend.text = element_text(size= 15),
+        legend.title= element_text(size= 15)) + 
+  scale_color_continuous(type = "viridis") + scale_size_continuous(range=c(1,7))
+ggobj
+```
+
+
+```{r fig.width=4, fig.height=3}
+pairLR.HIPPO <- extractEnrichedLR(cellchatobj, signaling = pathways.show, geneLR.return = FALSE)
+
+LR.show <- pairLR.HIPPO[2,] 
+# Hierarchy plot
+vertex.receiver = seq(1,4) # a numeric vector
+netVisual_individual(cellchatobj, signaling = pathways.show,layout = "hierarchy",  pairLR.use = LR.show, vertex.receiver = vertex.receiver)
+netVisual_individual(cellchatobj, signaling = pathways.show, pairLR.use = LR.show, layout = "circle")
+
+```
+
+
+```{r}
+pathways.show <- c("FGFR signaling pathway") 
+
+netVisual_aggregate(cellchatobj, signaling = pathways.show, layout = "circle")
+netVisual_heatmap(cellchatobj, signaling = pathways.show, color.heatmap = "Reds")
+
+
+#可视化单个配体受体对的影响
+netAnalysis_contribution(cellchatobj, signaling = pathways.show)
+
+pairLR.FGFR <- extractEnrichedLR(cellchatobj, signaling = pathways.show, geneLR.return = FALSE)
+
+LR.show <- pairLR.FGFR[2,] # show one ligand-receptor pair Dally-FGFR
+
+
+netVisual_individual(cellchatobj, signaling = pathways.show, pairLR.use = LR.show, layout = "circle")
+
+```
+
+```{r}
+pathways.show <- c("other") 
+
+netVisual_aggregate(cellchatobj, signaling = pathways.show, layout = "circle")
+netVisual_heatmap(cellchatobj, signaling = pathways.show, color.heatmap = "Reds")
+
+
+#可视化单个配体受体对的影响
+netAnalysis_contribution(cellchatobj, signaling = pathways.show)
+
+pairLR.other <- extractEnrichedLR(cellchatobj, signaling = pathways.show, geneLR.return = FALSE)
+
+LR.show <- pairLR.other[1,] # show one ligand-receptor pair sema1a-PlexA
+
+netVisual_individual(cellchatobj, signaling = pathways.show, pairLR.use = LR.show, layout = "circle")
+
+netVisual_bubble(cellchatobj, sources.use = 4, targets.use = c(1:7), remove.isolate = FALSE)
+```
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

@@ -1,0 +1,43 @@
+---
+title: "Cell type annotation"
+output: html_notebook
+---
+
+# Second part
+## Cell type annotation
+```{r setup, include=FALSE}
+getwd()
+knitr::opts_knit$set(root.dir = "/home/zju/tianfeng/single_cell_atlas")
+# setwd("/home/zju/tianfeng/single_cell_atlas")
+# getwd()
+```
+
+```{r}
+umapplot(fly_merge)
+Idents(fly_merge) <- fly_merge$seurat_clusters
+levels(Idents(fly_merge)) <- c("DB","DT","SB","PC","Fat Body","Muscle","TC","VB","LT","NE","GB")
+
+selected_cells <- CellSelector(plot = DimPlot(fly_merge, reduction = "umap"))
+fly_merge <- SetIdent(fly_merge, cells = selected_cells, "ASP")
+fly_merge$celltype <- Idents(fly_merge)
+# saveRDS(fly_merge,"./processed_data_file/fly_merge.rds")
+```
+
+### 只保留气管主要成分
+```{r}
+fly_merge_filtered <- subset(fly_merge, 
+                             idents = c("DB","DT","SB","PC","TC","VB","LT","GB","ASP"))
+fly_merge_filtered$celltype <- droplevels(fly_merge_filtered$celltype) # 删除多余的levels
+# saveRDS(fly_merge_filtered,"./processed_data_file/fly_merge_filtered.rds")
+fly_merge_filtered <- fly_merge_filtered %>% 
+  RunPCA() %>% FindNeighbors(dims = 1:20) %>% 
+  RunUMAP(dims = 1:20)
+umapplot(fly_merge_filtered,split.by = "orig.ident")
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

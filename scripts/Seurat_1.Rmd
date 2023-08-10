@@ -1,0 +1,749 @@
+---
+editor_options: 
+  markdown: 
+    wrap: 64
+---
+
+## Setup the Seurat Object
+
+```{r}
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(loomR)
+library(Matrix)
+library(future)
+library(ggplot2)
+# Enable parallelization
+#并行计算可以提高如下函数在muiltcores下的工作效率
+#NormalizeData()
+# ScaleData()
+# JackStraw()
+# FindMarkers()
+# FindIntegrationAnchors()
+# FindClusters() - if clustering over multiple resolutions
+plan("multiprocess", workers = 6)
+```
+
+## 读取10x
+
+```{r init}
+#read10x
+larva.counts <- Read10X(data.dir = './control_data/')
+# Initialize the Seurat object with the raw (non-normalized data)
+#创建seurat对象
+larva <- CreateSeuratObject(counts = larva.counts, project = 'wt_larva',min.cells = 3, min.features = 200)
+```
+
+## 导出数据表
+
+```{r init}
+# larva <- readRDS("./larva_trachea.rds")
+larva <- FindVariableFeatures(larva, selection.method = 'vst', nfeatures = 2000)
+genelist <- larva@assays[["RNA"]]@var.features
+#cl8 <- subset(larva,idents = 8)
+countsMat <- as.matrix(GetAssayData(larva,slot = "counts"))  #data slot是标准化后的数据 counts slot是 没有标准化后的数据
+countsMat <- countsMat[genelist,] #过滤高变异基因
+sum(is.na(countsMat))
+#write.csv(countsMat,"./med_countMat/dataMat.csv")
+write.csv(countsMat,"./med_countMat/countsMat.csv")
+
+larva <- CreateSeuratObject(counts = A, data = A,project = 'after_wedge')
+
+#计算cpm矩阵
+cpm <- apply(countsMat, 2, function(x){x/sum(x)*1000000})
+write.csv(cpm,"cpmMat.csv",row.names = TRUE)
+
+# DB cells
+DB <- subset(larva, idents = 'DB')
+DBcountsMat <- as.matrix(GetAssayData(DB,slot = "counts"))
+write.csv(DBcountsMat,"./med_countMat/DBcountMat.csv")
+
+```
+
+## 去除了doublets的原始数据
+
+```{r}
+# larva <- readRDS("./rawLarvaAfterDoubletRm.rds")
+singlets <- read.table("./QC_info/singlets.csv")
+larva.counts <- Read10X(data.dir = './filtered_feature_bc_matrix')
+larva <- CreateSeuratObject(counts = larva.counts,project = 'wt_larva',min.cells = 3, min.features = 200)
+larva <- subset(larva, cells = singlets$V1)
+
+VlnPlot(larva, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2)
+
+```
+
+## 去掉第七个cluster
+
+```{r}
+larva <- subset(larva,idents = '7',invert = TRUE)
+```
+
+## Standard pre-processing workflow
+
+The steps below encompass the standard pre-processing workflow
+for scRNA-seq data in Seurat. These represent the selection and
+filtration of cells based on QC metrics, data normalization and
+scaling, and the detection of highly variable features.
+
+```{r mito, fig.height=7, fig.width=13}
+# [[ 符号可以新增meta.data中的slot
+larva[["percent.mt"]] <- PercentageFeatureSet(larva, pattern = "^mt:")
+
+#前五个细胞的QC信息
+head(larva@meta.data, 5)
+```
+
+```{r qc2, fig.height=7, fig.width=13}
+#Visualize QC metrics as a violin plot
+VlnPlot(larva, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+plot1 <- FeatureScatter(larva, feature1 = "nCount_RNA", feature2 = "percent.mt") 
+plot2 <- FeatureScatter(larva, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") 
+plot1 + plot2
+larva <- subset(larva, subset = nFeature_RNA > 600 & nFeature_RNA < 4000 & nCount_RNA > 1000 &  nCount_RNA < 30000) #WT
+```
+
+## Normalizing the data
+
+```{r normalize & var_features, fig.height=5, fig.width=10}
+#在data slot存储对数normalized之后的数值
+larva <- NormalizeData(larva, normalization.method = "LogNormalize", scale.factor = 10000)
+larva <- FindVariableFeatures(larva, selection.method = 'vst', nfeatures = 2000)
+
+#返回最高差异表达的基因
+larva@assays[["RNA"]]@meta.features %>% slice_max(n = 10, order_by = vst.variance.standardized)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(larva), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(larva)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 + plot2
+```
+
+----------------------------------------------------------------
+
+## Scaling the data
+
+Next, we apply a linear transformation ('scaling') that is a
+standard pre-processing step prior to dimensional reduction
+techniques like PCA. The `ScaleData()` function:
+
+-   Shifts the expression of each gene, so that the mean
+    expression across cells is 0
+-   Scales the expression of each gene, so that the variance
+    across cells is 1
+    -   This step gives equal weight in downstream analyses, so
+        that highly-expressed genes do not dominate
+-   The results of this are stored in
+    `larva[["RNA"]]@scale.data`
+
+```{r regress, fig.height=7, fig.width=11, results='hide'}
+all.genes <- rownames(larva)
+larva <- ScaleData(larva, features = all.genes)
+```
+
+## PCA
+
+Seurat provides several useful ways of visualizing both cells
+and features that define the PCA, including `VizDimReduction()`,
+`DimPlot()`, and `DimHeatmap()`
+
+```{r pca}
+larva <- RunPCA(larva, features = VariableFeatures(object = larva))
+
+# Examine and visualize PCA results a few different ways
+# print(larva[['pca']], dims = 1:5, nfeatures = 5)
+VizDimLoadings(larva, dims = 1:2, reduction = 'pca')
+DimPlot(larva, reduction = 'pca')
+DimHeatmap(larva, dims = 1, cells = 500, balanced = TRUE)
+```
+
+## Clustering 聚类
+
+```{r cluster, fig.height=5, fig.width=7}
+larva <- FindNeighbors(larva, dims = 1:20)
+larva <- FindClusters(larva, resolution = 0.2)
+# saveRDS(larva,"larva_pt.rds")
+# Look at cluster IDs of the first 5 cells
+head(Idents(larva), 5)
+```
+
+## 降维与可视化
+
+```{r umapplot, fig.height=8, fig.width=10}
+larva <- RunUMAP(larva, dims = 1:20, n.neighbors = 50L)
+#larva <- RunTSNE(larva, dims = 1:20)
+
+# note that you can set `label = TRUE` or use the LabelClusters function to help label individual clusters
+DimPlot(larva, reduction = 'umap',label = T,pt.size = 0.8)
+
+# ref <- readRDS("./larva_trachea.rds")
+# larva@active.ident <- larva$seurat_clusters
+#载入标注
+# larva@active.ident <- ref@active.ident
+# saveRDS(larva,"afterWEDGE.rds")
+DimPlot(larva, reduction = 'umap',label = T,pt.size = 0.8)
+```
+
+### 保存seurat对象
+
+```{r saveobject, eval=FALSE}
+saveRDS(larva, file = "./larva_HSD.rds")
+```
+
+## 寻找marker
+
+使用`FindAllMarkers()`找到所有细胞亚群中的marker，一般只找+的
+或者在指定的细胞亚群之间寻找差异基因
+`min.pct`指定了这个marker至少需要表达的比例
+
+```{r markers1, fig.height=8, fig.width=15}
+#寻找将cluster5和0123分开的markers,默认差异表达倍数要大于2^0.25
+cluster10.markers <- FindMarkers(larva, ident.1 = 5, min.pct = 0.2,
+                                logfc.threshold = 1)
+
+# cluster5.markers <- FindMarkers(larva, ident.1 = 5, ident.2 = c(0:15)[-5], min.pct = 0.5,
+#                                 logfc.threshold = 1)
+
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+larva.markers <- FindAllMarkers(larva, only.pos = TRUE, min.pct = 0.2, logfc.threshold = 1)
+#分组按差异表达水平排序
+larva.markers %>% group_by(cluster) %>% slice_max(n = 2, order_by = avg_logFC)
+write.csv(larva.markers,"markers.csv")
+larva.markers <- read.csv("markers.csv")
+```
+
+#marker的可视化方法 We include several tools for visualizing
+marker expression. `VlnPlot()` (shows expression probability
+distributions across clusters), and `FeaturePlot()` (visualizes
+feature expression on a tSNE or PCA plot) are our most commonly
+used visualizations. We also suggest exploring `RidgePlot()`,
+`CellScatter()`, and `DotPlot()` as additional methods to view
+your dataset.
+
+```{r markerplots, fig.height=10, fig.width=10}
+#根据所有的markers dataframe 返回gene list
+get_cluster_markers <- function(markers,cluster)
+{
+    
+  c(larva.markers[larva.markers$cluster == cluster,]$gene)
+}
+#返回指定cluster的marker基因
+cluster10.markers <- get_cluster_markers(larva.markers,10)
+# cluster5.markers <- rownames(cluster5.markers)
+
+#小提琴图
+VlnPlot(larva, features <- head(cluster10.markers))
+
+#在UMAP上显示
+FeaturePlot(larva, features = c("Cdk4","Abl","Cks85A","Cdk1"))
+
+#艺术的波浪线
+RidgePlot(larva, features = head(cluster10.markers), ncol = 3)
+
+#点阵图
+DotPlot(larva,features = c("Cdk4","Abl","Cks85A","Cdk1"))
+
+# #单个细胞之间的差异表达
+# CellScatter(larva,cell1 = "AGCGCTGAGAGTTCGG-6e47f1ca__FCA57_Male_TracheaGFP_larva_5dWT_Kornberg_sample1",
+#             cell2 = "AGATGCTTCCTTCGAC-6e47f1ca__FCA57_Male_TracheaGFP_larva_5dWT_Kornberg_sample1", highlight  = head(larva.markers[larva.markers$cluster == 5,]$gene))
+```
+
+\##`DoHeatmap()` 生成每个cluster的marker表达热图
+
+```{r clusterHeatmap, fig.height=8, fig.width=15}
+larva.markers %>% group_by(cluster) %>% top_n(n = 6, wt = avg_logFC) -> top10
+DoHeatmap(larva, features = top10$gene) + scale_fill_gradientn(colors = c("blue", "white", "red")) #修正的doheatmap绘图颜色
+```
+
+##每个cluster之间的相关性
+
+```{r}
+larva <- readRDS("./larva_trachea.rds")
+#获取平均表达矩阵
+aver_expr_mat <- c()
+for(cluster_name in levels(larva@active.ident))
+{
+  temp <- as.matrix(GetAssayData(larva,slot = "data")[,WhichCells(larva,idents = cluster_name)])
+  aver_expr_mat <- cbind(aver_expr_mat,apply(temp,1,mean))
+}
+
+colnames(aver_expr_mat) <- levels(larva@active.ident)
+#选高差异表达
+aver_expr_mat <- aver_expr_mat[larva@assays[["RNA"]]@var.features,]
+
+cormat <- cor(aver_expr_mat)
+pheatmap::pheatmap(cormat,cluster_rows = FALSE,cluster_cols = FALSE,main = "corheatmap1")
+pheatmap::pheatmap(cormat,main = "corheatmap2")
+```
+
+## 根据marker标注clusters类型
+
+两种方法找出marker，亚群之间分离，和所有亚群分离 Fortunately in
+the case of this dataset, we can use canonical markers to easily
+match the unbiased clustering to known cell types:
+
+| Cluster ID | Markers | Cell Type |
+|------------|---------|-----------|
+
+```{r,fig.height=8, fig.width=20}
+#从marker中取交集
+degs <- read.csv("./DEGs_from_smartSeq/tr4tr5DEGslist.csv",header = FALSE)
+markergenes <- rownames(larva.markers)
+hopefully <- intersect(degs$V1,markergenes)
+DoHeatmap(larva,features = hopefully)
+
+degs <- read.csv("./DEGs_from_smartSeq/up_DEGslist.csv",header = FALSE)
+markergenes <- rownames(larva.markers)
+hopefully <- intersect(degs$V1,markergenes)
+DoHeatmap(larva,features = hopefully)
+
+degs <- read.csv("./DEGs_from_smartSeq/down_DEGslist.csv",header = FALSE)
+markergenes <- rownames(larva.markers)
+hopefully <- intersect(degs$V1,markergenes)
+DoHeatmap(larva,features = hopefully)
+
+
+#deseq res
+genes <- read.csv("./DEGs_from_smartSeq/First1200GenesFromDeseq2.csv",header = FALSE)
+genes <- as.vector(genes$V1)
+
+tr5_2h <- DoHeatmap(larva,features = genes[1:800],label = TRUE) + NoLegend()
+tr5_2h
+
+
+
+DoHeatmap(larva,features = genes[200:400],label = TRUE) + NoLegend()
+DoHeatmap(larva,features = genes[400:600],label = TRUE) + NoLegend()
+
+
+larva <- subset(larva,idents = c(0:9)[-8])
+
+#平均表达矩阵
+aver_expr_mat <- c()
+for(j in c(0:9)[-8])
+{
+  temp <- as.matrix(GetAssayData(larva,slot = "data")[,WhichCells(larva,idents = c(j))])
+  aver_expr_mat <- cbind(aver_expr_mat,apply(temp,1,mean))
+}
+
+colnames(aver_expr_mat) <- as.factor(c(0:9)[-8])
+
+genelist <- intersect(genes[1:600],rownames(aver_expr_mat))
+
+pheatmap::pheatmap(aver_expr_mat[genelist,],cluster_cols=TRUE,scale = "row",cluster_rows = FALSE)
+
+
+draw <- CreateSeuratObject(aver_expr_mat)
+Idents(draw) <- c(0:15)
+draw <- subset(draw,idents = c(0:9))
+draw <- SetAssayData(draw,slot = "data",as.matrix(GetAssayData(draw,slot = "data")))
+DoHeatmap(subset(draw,idents = c(0:9)), 
+            features = genes[1:600],draw.lines = F)
+
+```
+
+### 考虑cluster8，tr5的候选者
+
+```{r labelplot, fig.height=5, fig.width=5}
+#考虑cluster8，tr5的候选者
+cluster8.markers <- FindMarkers(larva, ident.1 = 8, ident.2 = 0, min.pct = 0.5,
+                                logfc.threshold = 1)
+cluster8.markers %>% top_n(n = 16, wt = avg_logFC) -> cluster8.markers.topn
+FeaturePlot(larva, features = rownames(cluster8.markers.topn),cols = c("lightgrey","red"),dims = c(1,2),ncol = 4,label = T)
+trechamarkers <- c("trh","btl","bs")
+IFeaturePlot(larva,feature = "Upd2")
+FeaturePlot(larva, features = trechamarkers,cols = c("lightgrey","red"),dims = c(1,2),ncol = 2,label = T)
+DotPlot(larva,features = trechamarkers)
+
+
+#markers for every clusters 
+cluster8.markers <- FindMarkers(larva,only.pos = TRUE, ident.1 = 8, min.pct = 0.5,
+                                logfc.threshold = 1)
+cluster8.markers %>% top_n(n = 40, wt = avg_logFC) -> cluster8.markers.topn
+cluster8.cells <- WhichCells((subset(larva,idents = 8)))
+DoHeatmap(larva,features = rownames(cluster8.markers.topn))
+DotPlot(larva,features =  rownames(cluster8.markers.topn))
+```
+
+```{r labelplot, fig.height=15, fig.width=5}
+#分出1和2的markers
+cluster2.markers <- FindMarkers(larva, ident.1 = 2, ident.2 = 1, min.pct = 0.3,
+                                logfc.threshold = 0.5)
+cluster2.markers %>% top_n(n = 10, wt = avg_logFC) -> cluster2.markers.top10
+FeaturePlot(larva, features = rownames(cluster2.markers.top10),cols = c("lightgrey","red"),dims = c(1,2),ncol = 1,label = T)
+
+#先看一看markers,对应每一个cluster
+FeaturePlot(larva, features = head(get_cluster_markers(larva.markers,4)),cols = c("lightgrey","red"),dims = c(1,2),ncol = 1,label = T)
+
+#一个交互窗口
+#FeaturePlot(larva, features = head(get_cluster_markers(larva.markers,1)),cols = c("lightgrey","red"),dims = c(1,2),ncol = 1,label = T,interactive = T)
+
+# new.cluster.ids <- c("btl-GAL4 + female cell, cl.2", "larva tracheocyte", "unannotated","unannotated","unannotated","unannotated","unannotated")
+# names(new.cluster.ids) <- levels(larva)
+# larva <- RenameIdents(larva, new.cluster.ids)
+```
+
+## 细胞亚群标注
+
+```{r labelplot, fig.height=8, fig.width=8}
+#手动命名的同时可以重命名一些细胞亚群达到合并的效果
+#ref <- RenameIdents(larva,'1'='DT','4'='DT','0' = 'DB','2' = 'VB','3' = "SB",'5' = "SB",'6' = "PC",'8' = "PC",'7' = "Unannotated",'9' = "TC",'10' = "FB",'11' = "NE",'12' = "carcass",'13' = "FB",'14' = "SG",'15' = "CB")
+
+larva <- RenameIdents(larva,'1'='DT','4'='DT','0' = 'DB','2' = 'VB','3' = "SB",'5' = "TC",'6' = "VB",'8' = "PC",'7' = "Unannotated",'9' = "TC",'10' = "FB",'11' = "NE",'12' = "carcass",'13' = "FB",'14' = "SG",'15' = "CB")
+prop.table(table(Idents(larva)))
+table(Idents(larva))
+
+
+DotPlot(larva,features = c("arm"))
+
+DimPlot(larva, reduction = 'umap', label = TRUE, pt.size = 0.8)
+FeaturePlot(larva,reduction = 'umap',features = 'peb')
+
+table(Idents(subset(larva,arm>1)))
+```
+
+### DB subclusters
+
+```{r}
+library(ggplot2)
+DB_cluster <- subset(larva,idents = 'DB')
+DimPlot(DB_cluster,reduction = 'umap')
+DB_cluster <- FindVariableFeatures(DB_cluster, selection.method = 'vst', nfeatures = 2000)
+
+DB_cluster <- RunPCA(DB_cluster, features = VariableFeatures(object = DB_cluster))
+
+VizDimLoadings(DB_cluster, dims = 1:2, reduction = 'pca')
+DimPlot(DB_cluster, reduction = 'pca')
+DimHeatmap(DB_cluster, dims = 1, cells = 500, balanced = TRUE)
+
+DB_cluster <- FindNeighbors(DB_cluster, dims = 1:20)
+DB_cluster <- FindClusters(DB_cluster, resolution = 0.3)
+DimPlot(DB_cluster,reduction = "umap")+ggtitle("DB_cluster_UMAP")
+DB_cluster <- RunUMAP(DB_cluster,dims = 1:20)
+#DB_cluster <- RunTSNE(DB_cluster, dims = 1:20)
+DimPlot(DB_cluster,reduction = "umap" )+ggtitle("DB_subUMAP") 
+
+DB_markers <- FindAllMarkers(DB_cluster,min.pct = 0.1,logfc.threshold = 0.5,only.pos=TRUE)
+write.csv(DB_markers,"DBMarkers.csv")
+#IFeaturePlot(larva,feature = "esg")
+trechamarkers <- c("trh","btl","bs","esg")
+FeaturePlot(DB_cluster, features = trechamarkers,cols = c("lightgrey","red"),dims = c(1,2),ncol = 2,label = T)
+top10 <- DB_markers %>% group_by(cluster) %>% slice_max(n = 7, order_by = avg_logFC)
+
+DotPlot(DB_cluster,features = unique(top10$gene))+ggtitle("DBMarkers")
+```
+
+```{r save.rds, eval=FALSE}
+#saveRDS(larva, file = "larva_final.rds")
+```
+
+## 这里是seurat的交互功能
+
+```{r labelplot, fig.height=10, fig.width=5}
+larva <- readRDS("larva_final.rds")
+#使用这个方法从metadata中找到原始的cluster
+Idents(larva) <- larva@meta.data[["seurat_clusters"]]
+
+#找到1和2分离的markers
+cluster1.markers <- FindMarkers(larva, ident.1 = 1, ident.2 = 2, min.pct = 0.3,
+                                logfc.threshold = 0.5)
+cluster1.markers
+
+#feature plot，这里的feature指定的是初始的显示基因
+
+
+IFeaturePlot(larva,feature = "Spalt")
+```
+
+### 手动选择细胞亚群
+
+```{r labelplot, fig.height=10, fig.width=5}
+#手动选择细胞亚群,select.cells存储选择的细胞，这里选了左下角
+select.cells <- CellSelector(plot = DimPlot(larva, reduction = "umap"))
+
+#更改这个细胞亚群的名字
+Idents(larva,cells = select.cells) <- "selected"
+level(larva)
+DimPlot(larva,reduction = "umap",label = T)
+
+#寻找将它和其他所有细胞亚群区分开来的markers
+selected.cells.markers <- FindMarkers(larva, ident.1 = "selected", ident.2 = levels(larva)[levels(larva)!="selected"], min.pct = 0.4,
+                                logfc.threshold = 0.5)
+
+#这是一个dataframe
+selected.cells.markers
+
+#选取几个主要的clusters，画图好看一点
+larva_principle_clusters <- subset(larva,idents = c(0:5,"selected"))
+```
+
+### 在ggplot2对象上加label
+
+```{r}
+plot <- DimPlot(larva, reduction = "umap") + NoLegend()
+LabelClusters(plot = plot, id = "ident")
+```
+
+### 对选择的clusters的markers进行可视化
+
+```{r labelplot , fig.height=15, fig.width=10}
+#小提琴图
+VlnPlot(larva_principle_clusters, features <- head(rownames(selected.cells.markers),9),pt.size=0)
+#在UMAP上显示
+FeaturePlot(larva, features = head(rownames(selected.cells.markers),9))
+#艺术的波浪线
+RidgePlot(larva_principle_clusters, features = head(rownames(selected.cells.markers),8), ncol = 2)
+#点阵图
+DotPlot(larva,features = head(rownames(selected.cells.markers),20))
+#heatmap
+DoHeatmap(larva_principle_clusters, features = head(rownames(selected.cells.markers),100)) + NoLegend()
+```
+
+```{r}
+PCs <- subset(larva,idents = "PC")
+DimPlot(PCs,reduction = "umap")
+PCs <- FindNeighbors(PCs, dims = 1:20)
+PCs <- FindClusters(PCs, resolution = 0.2)
+DimPlot(PCs,reduction = "umap")
+PCs <- RunTSNE(PCs, dims = 1:20)
+DimPlot(PCs,reduction = "umap")
+```
+
+```{r,fig.height=7,fig.width=20}
+PC_markers <- FindAllMarkers(PCs,min.pct = 0.1,logfc.threshold = 1,only.pos=TRUE)
+DotPlot(PCs,features = rownames(PC_markers)[1:20])
+top10 <- PC_markers %>% group_by(cluster) %>% slice_max(n = 10, order_by = avg_logFC)
+DotPlot(PCs,features = top10$gene)
+```
+
+```{r function}
+FindSubCluster <- function(
+  object,
+  cluster,
+  graph.name,
+  subcluster.name = "sub.cluster",
+  resolution = 0.5,
+  algorithm = 1
+) {
+  sub.cell <- WhichCells(object = object, idents = cluster)
+  sub.graph <- as.Graph(x = object[[graph.name]][sub.cell, sub.cell])
+  sub.clusters <- FindClusters(
+    object = sub.graph,
+    resolution = resolution,
+    algorithm = algorithm
+  )
+  sub.clusters[, 1] <- paste(cluster,  sub.clusters[, 1], sep = "_")
+  object[[subcluster.name]] <- as.character(x = Idents(object = object))
+  object[[subcluster.name]][sub.cell, ] <- sub.clusters[, 1]
+  return(object)
+}
+```
+
+## Subcluster DB 继承自refined_figures.Rmd \## Return: subumap_plot DBsubumap DB_features
+
+```{r}
+larva <- FindSubCluster(larva,"DB","RNA_snn",resolution = 0.3)
+subumap_plot <- umapplot(larva, group.by = "sub.cluster")
+#ggsave(filename = "larva_subumap.svg", device = svg, height = 6, width = 7, plot = subumap_plot) #对svg调整坐标轴
+
+DB <- subset(larva,idents = "DB")
+Idents(DB) <- DB$sub.cluster
+DBsubumap <- umapplot(DB, group.by = "sub.cluster") + scale_y_continuous(limits = c(-2,8), breaks = NULL) +  scale_x_continuous(limits = c(2,12), breaks = NULL)
+
+#ggsave(filename = "VB_subumap.svg", device = svg, height = 6, width = 7, plot = VBsubumap) #对svg调整坐标轴
+
+DB <- RenameIdents(DB,'DB_0'='DB_2') #合并DB0和DB2
+
+DBsubumap2 <- umapplot(DB) + scale_y_continuous(limits = c(-2,8), breaks = NULL) +  scale_x_continuous(limits = c(2,12), breaks = NULL)
+
+#子群的marker
+DBsubMarkers <- FindAllMarkers(DB, min.pct = 0.5, logfc.threshold = 0.5, only.pos = F)
+DB_3markers <- FindMarkers(DB, ident.1 = "DB_2", only.pos = F, logfc.threshold = 0.5)
+
+
+dhm(rownames(DB_3markers),obj = DB) 
+#dhm(DBsubMarkers$gene,obj = DB) 
+
+#DB_3
+f("pnt",DB)
+
+#可视化的基因名称
+m6 <- f("Cpr51A", obj = DB) + scale_y_continuous(limits = c(-2,8), breaks = NULL) +  scale_x_continuous(limits = c(2,12), breaks = NULL)
+mbeta <- f("Osi15", obj = DB) + scale_y_continuous(limits = c(-2,8), breaks = NULL) +  scale_x_continuous(limits = c(2,12), breaks = NULL)
+apn <- f("CG15887", obj = DB) + scale_y_continuous(limits = c(-2,8), breaks = NULL) +  scale_x_continuous(limits = c(2,12), breaks = NULL)
+wdp <- f("wdp", obj = DB) + scale_y_continuous(limits = c(-2,8), breaks = NULL) +  scale_x_continuous(limits = c(2,12), breaks = NULL)
+
+plot_grid(m6, mbeta, apn, wdp, labels = "AUTO", ncol = 2, nrow = 2, label_size = 18)
+
+f("bnl", obj = larva)
+```
+
+```{r}
+#gene_name <- c("bnl", "btl", "htl", "Egfr") #"bnl"-FGF , "btl"-FGFR , "htl"-FGFR
+ gene_name <- c("grk", "spi", "vn", "Krn") # EgfR配体 由 grk, spi, vn, and Krn转录
+figures <- lapply(gene_name, f)
+plot_grid(plotlist = figures, labels = "AUTO", ncol = 2, nrow = 2, label_size = 18)
+```
+
+### Appendix \## another umap
+
+```{r}
+larva <- RunUMAP(larva, dims = 1:20, n.neighbors = 100L)
+umapplot(obj = larva)
+```
+
+### subGO
+
+```{r}
+for (cl in levels(Idents(DB))){
+  #选择cluster对应的marker
+  gene_list <- DBsubMarkers[DBsubMarkers$cluster==cl,]$gene
+  #ID转换
+  genes <- bitr(gene_list, fromType="SYMBOL",toType=c("ENTREZID","ENSEMBL"),
+                   OrgDb = org.Dm.eg.db)
+  enrich.go <- enrichGO(gene = genes$ENTREZID, #基因列表文件中的基因名称
+                          OrgDb = org.Dm.eg.db,
+                          keyType = 'ENTREZID',
+                          ont = 'ALL', #可选 BP、MF、CC，也可以指定 ALL 同时计算 3 者
+                          pAdjustMethod = 'fdr',
+                          pvalueCutoff = 0.05, 
+                          qvalueCutoff = 0.2, 
+                          readable = TRUE)
+  
+  GO_plot <- dotplot(enrich.go,title = paste(cl,"GO"),showCategory = 15) + theme_classic() + theme(text = element_text(colour = 'black', size=12))
+  ggsave(filename = paste0(cl,"_GO.svg"), device = svg, height = 8, width = 10, plot = GO_plot)
+}
+
+
+  gene_list <- rownames(DB_2markers)
+  #ID转换
+  genes <- bitr(gene_list, fromType="SYMBOL",toType=c("ENTREZID","ENSEMBL"),
+                   OrgDb = org.Dm.eg.db)
+  enrich.go <- enrichGO(gene = genes$ENTREZID, #基因列表文件中的基因名称
+                          OrgDb = org.Dm.eg.db,
+                          keyType = 'ENTREZID',
+                          ont = 'ALL', #可选 BP、MF、CC，也可以指定 ALL 同时计算 3 者
+                          pAdjustMethod = 'fdr',
+                          pvalueCutoff = 0.05, 
+                          qvalueCutoff = 0.2, 
+                          readable = TRUE)
+  
+  GO_plot <- dotplot(enrich.go,title ="DB2 GO",showCategory = 15) + theme_classic() + theme(text = element_text(colour = 'black', size=12))
+  ggsave(filename = paste0("D2","_GO.svg"), device = svg, height = 8, width = 10, plot = GO_plot)
+
+
+```
+
+```{r}
+aver_expr_mat <- c()
+for(cluster_name in levels(DB@active.ident))
+{
+  temp <- as.matrix(GetAssayData(DB,slot = "data")[,WhichCells(DB,idents = cluster_name)])
+  aver_expr_mat <- cbind(aver_expr_mat,apply(temp,1,mean))
+}
+
+colnames(aver_expr_mat) <- levels(DB@active.ident)
+#选高差异表达
+aver_expr_mat <- aver_expr_mat[DB@assays[["RNA"]]@var.features,]
+cormat <- cor(aver_expr_mat)
+corheatmap <- pheatmap(cormat, breaks = unique(c(seq(0.9,1, length=400))), color = colorRampPalette(c("#1E90FF", "white", "#ff2121"))(400),border_color = NA, cluster_rows = T, cluster_cols = T, angle_col = 45, main = "Correlation Heatmap")
+```
+
+## CCA
+
+```{r}
+
+larva <- readRDS("larva_trachea.rds")
+larva_main <- merge(hsd_larva,y = larva,add.cell.ids = c("HSD","wt")) 
+table(larva_main@meta.data$orig.ident)
+# 
+# larva_main <- NormalizeData(larva_main, normalization.method = "LogNormalize", scale.factor = 10000)
+# larva_main <- FindVariableFeatures(larva_main, selection.method = "vst", nfeatures = 2000)
+# all.genes <- rownames(larva_main)
+# larva_main <- ScaleData(larva_main, features = all.genes)
+# larva_main <- RunPCA(larva_main, features = VariableFeatures(object = dataset1))
+# DimPlot(larva_main,reduction = "pca", group.by = "orig.ident")
+# 
+# larva_main <- FindNeighbors(larva_main, dims = 1:20)
+# larva_main <- FindClusters(larva_main, resolution = 0.1)
+# larva_main <- RunUMAP(larva_main, dims = 1:20, n.neighbors = 40, min.dist = 0.3)
+# DimPlot(larva_main, reduction = "umap",group.by = "orig.ident" )
+# DimPlot(larva_main, reduction = "umap",pt.size = 0.5,label = T)
+
+#合并,去除批次差异 CCA
+larva_main <- SplitObject(larva_main, split.by = "orig.ident")
+
+for (i in 1:length(larva_main)) {
+  larva_main[[i]] <- NormalizeData(larva_main[[i]], verbose = FALSE)
+  larva_main[[i]] <- FindVariableFeatures(larva_main[[i]], selection.method = "vst", 
+                                             nfeatures = 2000, verbose = FALSE)
+}
+
+# SelectIntegrationFeatures(object.list = larva_main)
+
+CADanchors <- FindIntegrationAnchors(object.list = larva_main, dims = 1:20, k.anchor = 5, k.filter = 100)
+
+larva_main <- IntegrateData(anchorset = CADanchors, dims = 1:20)
+
+
+larva_main <- FindVariableFeatures(larva_main, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(larva_main)
+larva_main <- ScaleData(larva_main, features = all.genes)
+larva_main <- RunPCA(larva_main, features = VariableFeatures(object = larva_main))
+DimPlot(larva_main,reduction = "pca", group.by = "orig.ident")
+
+larva_main <- FindNeighbors(larva_main, dims = 1:20)
+larva_main <- FindClusters(larva_main, resolution = 0.2)
+larva_main <- RunUMAP(larva_main, dims = 1:20, n.neighbors = 60, min.dist = 0.3)
+DimPlot(larva_main, reduction = "umap", split.by = "orig.ident",label = T ) + DimPlot(hsd_larva, reduction = "umap",pt.size = 0.6,label = T)
+DimPlot(larva_main, reduction = "umap",pt.size = 0.6,label = T )
+# Idents(larva_main) <- larva_main$seurat_clusters
+DimPlot(larva, reduction = "umap",pt.size = 0.6,label = T)
+DimPlot(hsd_larva, reduction = "umap",pt.size = 0.6,label = T)
+```
+
+```{r}
+# saveRDS(larva_main,file = "larva_main.rds")
+larva_main <- readRDS("larva_main.rds")
+WhichCells(hsd_larva,idents = 4) #4对应main的10，2对应main里的7，1对应main的2，7对应main的1
+WhichCells(larva_main,idents = 7)
+dd <- Idents(larva_main)
+View(dd)
+write.csv(Idents(hsd_larva),"hsd_idents.csv")
+```
+
+```{r}
+cl2marker <- FindMarkers(hsd_larva,ident.1 = 2,only.pos = T,logfc.threshold = 0.8)
+```
+
+```{r}
+cl7 <- subset(hsd_larva,idents = 4)
+
+multi_featureplot(c("sd"),hsd_larva)
+View(cl7)
+```
+
+```{r}
+library(org.Dm.eg.db)
+  gene_list <- rownames(cl2marker)
+  #ID转换
+  genes <- bitr(gene_list, fromType="SYMBOL",toType=c("ENTREZID","ENSEMBL"),
+                   OrgDb = org.Dm.eg.db)
+  enrich.go <- enrichGO(gene = genes$ENTREZID, #基因列表文件中的基因名称
+                          OrgDb = org.Dm.eg.db,
+                          keyType = 'ENTREZID',
+                          ont = 'ALL', #可选 BP、MF、CC，也可以指定 ALL 同时计算 3 者
+                          pAdjustMethod = 'fdr',
+                          pvalueCutoff = 0.05, 
+                          qvalueCutoff = 0.2, 
+                          readable = TRUE)
+  
+ clusterProfiler::dotplot(enrich.go,title = paste("GO"),showCategory = 15) + theme_classic() + theme(text = element_text(colour = 'black', size=12))
+  # ggsave(filename = paste0(cl,"_GO.svg"), device = svg, height = 8, width = 10, plot = GO_plot)
+
+```

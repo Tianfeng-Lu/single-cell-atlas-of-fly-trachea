@@ -1,0 +1,78 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/tianfeng/single_cell_atlas")
+```
+```{r}
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install("RcisTarget")
+
+#featherURL <- "https://resources.aertslab.org/cistarget/databases/drosophila_melanogaster/dm6/flybase_r6.02/mc8nr/gene_based/dm6-5kb-upstream-full-tx-11species.mc8nr.feather" 
+#download.file(featherURL, destfile=basename(featherURL))
+```
+
+
+```{r}
+TFs <- c("cas","grn","Glut4EF","Taf12","cnc","trh","Asciz","mirr","CrebA","Six4","pdm3","Xbp1","bs","Mnt","sd","esg","sv","Taf1","ear","fru","Stat92E","TFAM","REPTOR","dysf","FoxK","Eip74EF","Camta","Atf3","Myc","chinmo","REPTOR-BP","ab","Bdp1","ci","E(spl)malpha-BFM","hay","exd","Dp","grh","bi")
+```
+
+
+```{r}
+library(RcisTarget)
+library(DT)
+genelist <- as.list(read.csv("2_down_DEGslist.csv",header = FALSE))
+colnames(genelist) <- NULL
+
+
+data(motifAnnotations_dmel_v8)
+motifRankings <- importRankings("../SCENIC_database/dmel/dm6-5kb-upstream-full-tx-11species.mc8nr.feather")
+motifEnrichmentTable_wGenes <- cisTarget(genelist, motifRankings,
+                                         highlightTFs = TFs,
+                                         motifAnnot=motifAnnotations_dmel_v8)
+```
+
+```{r}
+motifEnrichmentTable_wGenes_wLogo <- addLogo(motifEnrichmentTable_wGenes)
+resultsSubset <- motifEnrichmentTable_wGenes_wLogo
+
+```
+
+在Console中运行
+```{r}
+datatable(resultsSubset, 
+           escape = FALSE, # To show the logo
+           filter="top", options=list(pageLength=10))
+```
+
+ID转换
+```{r}
+
+
+```
+
+代码在另一个文件
+```{r} 
+library(clusterProfiler)
+genes <- as.vector(read.csv("conv1.csv", header = FALSE))
+
+kegg <- enrichKEGG(gene = c(genes), keyType = "ncbi-geneid", organism = 'dme',pAdjustMethod = 'fdr', pvalueCutoff = 0.05,
+                   qvalueCutoff = 0.1)
+barplot(kegg)
+dotplot(kegg)
+cnetplot(kegg)
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

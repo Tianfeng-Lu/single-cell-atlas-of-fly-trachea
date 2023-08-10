@@ -1,0 +1,209 @@
+---
+title: "subclustering"
+output: html_notebook
+---
+
+# subclustering for PC and DB
+
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/home/zju/tianfeng/single_cell_atlas")
+```
+```{r}
+source("./utils/tianfengRwrappers.R")
+```
+
+
+```{r}
+Idents(ctrl_filtered) <- ctrl_filtered$celltype
+ctrl_filtered <- FindNeighbors(ctrl_filtered, dims = 1:20)
+ctrl_filtered <- FindSubCluster(ctrl_filtered,"PC","SCT_snn",resolution = 0.15)
+Idents(ctrl_filtered) <- ctrl_filtered$sub.cluster
+# ctrl_filtered <- RenameIdents(ctrl_filtered, "PC_4" = "DB") #PC_4 分到DB去了
+# Idents(ctrl_filtered) -> ctrl_filtered$sub.cluster
+subumap_plot <- umapplot(ctrl_filtered)
+# ggsave(filename = "./ctrl_filtered_only/PC_subumap.png", device = png, height = 6, width = 7, plot = subumap_plot)
+```
+
+
+```{r}
+Idents(ctrl_filtered) <- ctrl_filtered$celltype
+PC <- subset(ctrl_filtered, idents = "PC")
+PC <- subset(PC, cells = CellSelector(UMAPPlot(PC)))
+Idents(PC) <- PC$sub.cluster
+umapplot(PC,group.by = "sub.cluster")
+
+# PC <- FindNeighbors(PC, dims=1:30)
+# PC <- FindClusters(PC, resolution = 0.4)
+# PC <- RunUMAP(PC, dims=1:30, n.neighbors = 10L, min.dist = 0.2)
+# umapplot(PC)
+
+PCsubumap <- umapplot(PC, group.by = "sub.cluster") + scale_y_continuous(limits = c(5,11), breaks = NULL) + scale_x_continuous(limits = c(-8.5,-2.5), breaks = NULL)
+# ggsave(filename = "./ctrl_only/PC_subumap2.png", device = png, height = 4, width = 5, plot = PCsubumap) #对svg调整坐标轴
+
+#可视化的基因名称
+bs <- f("bs", obj = PC) + scale_y_continuous(limits = c(5,11), breaks = NULL) + scale_x_continuous(limits = c(-8.5,-2.5), breaks = NULL)
+kni <- f("kni", obj = PC) + scale_y_continuous(limits = c(5,11), breaks = NULL) + scale_x_continuous(limits = c(-8.5,-2.5), breaks = NULL)
+saveRDS(PC,"./processed_data_file/PC_ctrl_subcluster.rds")
+```
+
+
+```{r}
+Idents(PC) <- factor(Idents(PC), levels = c("PC_0","PC_1","PC_2","PC_3"))
+PC_sub_markers <- FindAllMarkers(PC, logfc.threshold = 0.5, min.diff.pct = 0.2)
+
+PC_sub_markers <- FindAllMarkers(PC, logfc.threshold = 0.5, min.diff.pct = 0.2, only.pos = T)
+top10markers <- PC_sub_markers %>% group_by(cluster) %>% slice_max(n = 10, order_by = avg_logFC)
+# dhm2(PC_sub_markers$gene, PC, top5markers$gene)
+
+dhm(top10markers$gene, PC) %>% ggsave("./ctrl_only/PC_subclusters_markers.png", device = png, width = 10, height = 6, plot = .)
+
+write.csv(PC_sub_markers, "./ctrl_only/PC_sub_markers.csv", row.names = F)
+```
+
+## ORA analysis for PC subclusters
+```{r}
+library(org.Dm.eg.db)
+PC <- readRDS("./processed_data_file/PC_ctrl_subcluster.rds") 
+PC_sub_markers <- FindAllMarkers(PC, logfc.threshold = 0.5, min.diff.pct = 0.1, pseudocount.use=0) %>% filter(p_val_adj<0.01)
+
+for(clus in unique(PC_sub_markers$cluster)){
+genes <- bitr(filter(PC_sub_markers, cluster==clus)$gene,
+    fromType = "SYMBOL", toType = c("ENTREZID", "ENSEMBL"),
+    OrgDb = org.Dm.eg.db
+)
+enrich.go <- enrichGO(
+    gene = genes$ENTREZID, # 基因列表文件中的基因名称
+    OrgDb = org.Dm.eg.db,
+    keyType = "ENTREZID",
+    ont = "BP", # 可选 BP、MF、CC，也可以指定 ALL 同时计算 3 者
+    pAdjustMethod = "fdr",
+    pvalueCutoff = 0.05,
+    qvalueCutoff = 0.05,
+    readable = TRUE
+)
+
+df1 <- compute_enrichment_factor(enrich.go)
+ggplot((df1 %>% filter(p.adjust<0.001)%>% arrange(desc(enrichment_factor)))[1:15,], aes(x=enrichment_factor, y=factor(Description, levels = rev(Description)), fill=p.adjust)) + geom_col() + scale_fill_gradient(low = "#fd9999", high = "#b1d6fb") + 
+  xlim(0,NA) + labs(x="enrichment factor", y="PC subcluster GO terms") + theme_bw()  + 
+  theme(text = element_text(colour = "black", size = 16), 
+        plot.title = element_text(size = 16,color="black",hjust = 0.5),
+        axis.title = element_text(size = 16,color ="black"), 
+        axis.text = element_text(size= 16,color = "black"), panel.grid=element_blank()) + ggtitle(clus)
+ggsave(paste0("./figures/PC_subcluster/", clus, ".png"), dpi=256, height=4, width=10)
+}
+```
+
+## response of PC subclusters to HSD
+```{r fig.width=4, fig.height=3}
+HSD_filtered <- readRDS("./processed_data_file/HSD_filtered.rds")
+
+HSD_PC <- subset(HSD_filtered, celltype=="PC")
+HSD_PC
+
+PC@active.assay <- "RNA"
+HSD_PC@active.assay <- "RNA"
+
+# 试试移位对数 此方法对分离和合并的数据集效果应该是一样的
+
+PC <- NormalizeData(PC)
+HSD_PC <- NormalizeData(HSD_PC)
+
+# compute cluster-wise transformation prob
+HSD_PC_averexpr <- get_averexpr_mat_cluster(HSD_PC)
+
+minmax_scale <- function(x){ # min -> 0 max -> 1
+  x <- (x - min(x))/(max(x)-min(x))
+  return(x)
+}
+
+# setdiff(rownames(get_data_table(PC, type='data')), rownames(get_data_table(HSD_PC, type='data'))) # character(0)
+HSD_PC_expr <- get_data_table(HSD_PC, type='data')
+ctrl_PC_expr <- get_data_table(PC, type='data')
+kmeans_result <- kmeans(t(HSD_PC_expr), 10)[["centers"]]
+# kmeans_result 
+corr_matrix <- cor(ctrl_PC_expr, t(kmeans_result), method = "pearson")
+# max.col(corr_matrix) # find most similar K-centroid
+shift_vector <- t(ctrl_PC_expr) - kmeans_result[max.col(corr_matrix),] # compute shift_vector
+
+pb <- txtProgressBar(style = 3)
+cell_num <- dim(shift_vector)[1]
+trans_prob <- matrix(nrow = cell_num, ncol = cell_num, dimnames = list(rownames(shift_vector), rownames(shift_vector))) # transition probability 是一个 #cell × #cell 的矩阵 每一行根据shift vector计算的到其他细胞转移概率
+for(i in seq(cell_num)){ # 按行遍历所有细胞
+  d_i <- shift_vector[i]
+  r_ij <- t(ctrl_PC_expr) - t(ctrl_PC_expr)[i]
+  dist_ij <- sqrt(rowSums((r_ij - d_i)^2))
+  prob_ij <- exp(-minmax_scale(dist_ij)*2) # 未归一的概率
+  # prob_ij <- prob_ij/sum(prob_ij)
+  trans_prob[i, ] <- prob_ij
+  setTxtProgressBar(pb, i/cell_num)
+}
+close(pb)
+
+
+trans_prob2 <- trans_prob[names(sort(Idents(PC))), names(sort(Idents(PC)))] # 按照subcluster调整行列顺序
+pheatmap(trans_prob2, color = colorRampPalette(c("#1E90FF", "white", "#ff2121"))(400), show_colnames = F, scale="row", show_rownames = F, border_color = NA, cluster_rows = F, cluster_cols = F, angle_col = 0, main = "Transition Probability", annotation_col = data.frame(sort(Idents(PC))))
+
+# ---- global corr
+
+ctrl_HSD_corr_PC <- cor(get_averexpr_mat_cluster(PC), get_averexpr_mat_cluster(HSD_PC), method = "spearman")
+ctrl_HSD_corr_PC 
+
+pheatmap(cor(get_averexpr_mat_cluster(PC), method = "spearman"), color = colorRampPalette(c("#1E90FF", "white", "#ff2121"))(400), border_color = NA, cluster_rows = T, cluster_cols = T, angle_col = 0, main = "Correlation Heatmap")
+```  
+
+```{r}
+df1 <- FetchData(PC, vars =c("UMAP_1", "UMAP_2"))
+df1$prob <- colMeans(trans_prob)
+ggplot(df1) + geom_point(aes(x=UMAP_1, y=UMAP_2, color=prob)) + scale_color_gradient(low="#1E90FF", high = "#ff2121")
+# umapplot(subset(fly_merge_filtered, celltype =="PC"))
+
+```
+
+# subclustering for DB
+```{r}
+Idents(ctrl) <- ctrl$celltype
+ctrl <- FindNeighbors(ctrl, dims = 1:20)
+ctrl <- FindSubCluster(ctrl,"DB","SCT_snn",resolution = 0.15)
+Idents(ctrl) <- ctrl$sub.cluster
+
+subumap_plot <- umapplot(ctrl)
+ggsave(filename = "./ctrl_only/DB_subumap.png", device = png, height = 6, width = 7, plot = subumap_plot)
+```
+
+
+```{r}
+Idents(ctrl) <- ctrl$celltype
+DB <- subset(ctrl, idents = "DB")
+DB <- subset(DB, cells = CellSelector(DimPlot(DB)))
+Idents(DB) <- DB$sub.cluster
+DimPlot(DB,group.by = "sub.cluster")
+
+# DB <- FindNeighbors(DB, dims=1:30)
+# DB <- FindClusters(DB, resolution = 0.4)
+# DB <- RunUMAP(DB, dims=1:30, n.neighbors = 10L, min.dist = 0.2)
+# umapplot(DB)
+
+DBsubumap <- umapplot(DB, group.by = "sub.cluster") + scale_y_continuous(limits = c(-2,8), breaks = NULL) + scale_x_continuous(limits = c(-5.5,4.5), breaks = NULL)
+ggsave(filename = "./ctrl_only/DB_subumap2.png", device = png, height = 4, width = 5, plot = DBsubumap) #对svg调整坐标轴
+```
+
+
+```{r}
+Idents(DB) <- factor(Idents(DB), levels = c("DB_0","DB_1","DB_2"))
+# DB_sub_markers <- FindAllMarkers(DB, logfc.threshold = 0.5, min.diff.DBt = 0.2)
+
+DB_sub_markers <- FindAllMarkers(DB, logfc.threshold = 0.5, min.diff.DBt = 0.2, only.pos = T)
+top10markers <- DB_sub_markers %>% group_by(cluster) %>% slice_max(n = 10, order_by = avg_logFC)
+# dhm2(DB_sub_markers$gene, DB, top5markers$gene)
+
+dhm(top10markers$gene, DB) %>% ggsave("./ctrl_only/DB_subclusters_markers.png", device = png, width = 10, height = 6, plot = .)
+
+write.csv(DB_sub_markers, "./ctrl_only/DB_sub_markers.csv", row.names = F)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

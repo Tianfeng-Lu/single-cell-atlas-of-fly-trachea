@@ -1,0 +1,13 @@
+.RData
+.Rproj.user
+.Rhistory
+figures
+processed_data_file
+raw_data_file
+temp
+bulkRNA-seq/processed_data_file
+data_tables/processed_data_file
+*.loom
+*.rds
+SCENIC/
+bulkRNA-seq/GO L3-0h-2h with mfuzz 1-12/*

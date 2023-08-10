@@ -1,0 +1,143 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# part 5'
+## SCENIC visualization
+
+```{r setup, include=FALSE}
+# setwd("/home/zju/tianfeng/single_cell_atlas/SCENIC/ctrl_filtered")
+knitr::opts_knit$set(root.dir = "/home/zju/tianfeng/single_cell_atlas/SCENIC/ctrl_filtered")
+```
+
+```{r}
+library(Seurat)
+library(SCENIC)
+library(AUCell)
+library(RcisTarget)
+library(SCopeLoomR)
+library(SeuratDisk)
+library(future)
+plan("multisession", workers = 20)
+options(width = 200)
+```
+```
+When using SCENIC with Drosophila, please also cite: 
+Davie K., Jansens J., Koldere D. A single-cell transcriptome atlas of the aging drosophila brain.
+ Cell (2018). doi: 10.1016/j.cell.2018.05.057
+```
+# SCENIC analysis for ctrl_filtered/ctrl_PC/HSD_filtered
+
+```{r}
+# larva <- readRDS("./larva_trachea.rds")
+# larva <- readRDS("./processed_data_file/PC_ctrl_subcluster.rds")
+larva <- readRDS("~/tianfeng/single_cell_atlas/processed_data_file/ctrl_filtered.rds")
+identifier <- "ctrl_filtered"
+# create loom file
+
+larva@meta.data$orig.ident <- larva@active.ident
+loom <- as.loom(larva, verbose = T, overwrite = T)
+init_global_meta_data(loom = loom, loom.spec.version = 2)
+# convert_to_loom_v3_spec(loom)
+seurat.umap <- Embeddings(object = larva[["umap"]])
+add_embedding(
+  loom = loom, embedding = seurat.umap,
+  name = "seurat.umap", is.default = T
+)
+
+add_clustering(
+  loom = loom,
+  group = "larva",
+  name = "Active Ident",
+  clusters = larva@active.ident
+)
+# BiocManager::install("SingleCellExperiment")
+
+```
+
+```{r}
+# run SCENIC workflow
+exprMat <- get_dgem(loom)
+close_loom(loom)
+scenicOptions <- initializeScenic(org = "dmel", dbDir = "~/tianfeng/SCENIC_database/dmel", nCores = 20)
+saveRDS(scenicOptions, file = "./scenicOptions.Rds")
+
+genesKept <- geneFiltering(exprMat, scenicOptions)
+exprMat_filtered <- exprMat[genesKept, ]
+#devtools::install_version("SCENIC", version = "1.1.2")
+# 这步用时长
+runCorrelation(exprMat_filtered, scenicOptions)
+
+exprMat_filtered_log <- log2(exprMat_filtered + 1)
+runGenie3(exprMat_filtered_log, scenicOptions)  #done
+
+exprMat_log <- log2(exprMat + 1)
+runSCENIC_1_coexNetwork2modules(scenicOptions)
+org <- "dmel"
+dbs <- defaultDbNames[[org]]
+runSCENIC_2_createRegulons(scenicOptions)
+
+scenicOptions@settings$defaultTsne$perpl <- 50
+
+cellInfo <- data.frame(seuratCluster = Idents(larva))
+nGene <- larva@meta.data$nFeature_RNA
+nGene <- as.data.frame(nGene)
+nUMI <- larva@meta.data$nCount_RNA
+nUMI <- as.data.frame(nUMI)
+cellInfo["nGene"] <- nGene
+cellInfo["nUMI"] <- nUMI
+names(cellInfo)[1] <- "CellType"
+
+
+scenicOptions <- initializeScenic(org = "dmel", dbDir = "~/tianfeng/SCENIC_database/dmel", nCores = 1)
+runSCENIC_3_scoreCells(scenicOptions, exprMat_log)
+
+logMat <- log2(exprMat + 1)
+aucellApp <- plotTsne_AUCellApp(scenicOptions, logMat)
+```
+
+
+```{r}
+# savedSelections <- shiny::runApp(aucellApp, port = 8878)
+newThresholds <- savedSelections$thresholds
+scenicOptions@fileNames$int["aucell_thresholds", 1] <- "int/newThresholds2.Rds"
+saveRDS(newThresholds, file = getIntName(scenicOptions, "aucell_thresholds"))
+saveRDS(scenicOptions, file = "int/scenicOptions.Rds")
+#save.image()
+
+
+runSCENIC_4_aucell_binarize(scenicOptions)
+
+regulonAUC <- loadInt(scenicOptions, "aucell_regulonAUC")
+regulonActivity_byCellType <- sapply(
+  split(rownames(cellInfo), cellInfo$CellType),
+  function(cells) rowMeans(getAUC(regulonAUC)[, cells])
+)
+regulonActivity_byCellType_Scaled <- t(scale(t(regulonActivity_byCellType), center = T, scale = T))
+topRegulators <- reshape2::melt(regulonActivity_byCellType_Scaled)
+colnames(topRegulators) <- c("Regulon", "seuratCluster", "RelativeActivity")
+topRegulators <- topRegulators[which(topRegulators$RelativeActivity > 0), ]
+```
+
+
+```{r}
+result_path <- paste0("~/tianfeng/single_cell_atlas/data_tables/SCENIC/",identifier)
+if(!dir.exists(result_path)){
+  dir.create(result_path,recursive = TRUE)
+}
+write.csv(regulonActivity_byCellType_Scaled,
+  file = paste0(result_path,"/regulonActivity.csv"),
+  append = FALSE, quote = FALSE)
+
+write.csv(topRegulators,
+  file = paste0(result_path,"/topRegulators.csv"),
+  append = FALSE, quote = FALSE)
+
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

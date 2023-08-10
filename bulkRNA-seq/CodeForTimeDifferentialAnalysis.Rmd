@@ -1,0 +1,449 @@
+---
+title: "Smartseq L3 0hAPF 2hAPF"
+output: html_notebook
+---
+
+update: 20230720
+# 使用Deseq2和Mfuzz分析WT果蝇气管干细胞在L3，APF0h，APF2h的基因表达模式.
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/home/zju/tianfeng/single_cell_atlas/bulkRNA-seq/")
+```
+
+```{r}
+source("../utils/bulkRNAseqWrappers.R")
+```
+
+
+```{r}
+# TFs <- c("cas","grn","Glut4EF","Taf12","cnc","trh","Asciz","mirr","CrebA","Six4","pdm3","Xbp1","bs","Mnt","sd","esg","sv","Taf1","ear","fru","Stat92E","TFAM","REPTOR","dysf","FoxK","Eip74EF","Camta","Atf3","Myc","chinmo","ab","Bdp1","ci","hay","exd","Dp","grh","bi")
+#"E(spl)malpha-BFM","REPTOR-BP"把带横杠的全去了，否则时间序列导出的热图下标出界
+```
+
+```{r}
+
+heat_map<-function()
+{
+  selecteddata <- assay(ntdtrans)[c("cnc","mirr","bs","bsk","sv","MtnA","Atf3","chinmo","exd","TfIIFbeta","14-3-3epsilon","zfh1","Blimp-1","rl","aop","GATAd","CG17568","Pur-alpha","l(3)neo38","D19B","h","brm","kni","EcR","apt"
+),]
+  pheatmap(selecteddata,display_numbers = FALSE,number_color = 
+          "black",cluster_rows=FALSE,cluster_cols=FALSE,scale="row")
+
+}
+```
+
+## Deseq2
+原始数据（没有删除组）
+```{r}
+ori_datatrix<-read_matrix("./raw_data_file/L30h2hAPF_rawcounts.csv")
+grouping_file<-make_grouping_file(ori_datatrix,levels=c("L3", "0h", "2h"))
+dataset<-prefilter(ori_datatrix)
+dmatrix<-make_dds(dataset,grouping_file)
+analyseddata <- DESeq(dmatrix)
+
+ori_normalized_counts <- counts(analyseddata, normalized=TRUE)  #得到标准化后的counts
+write.csv(ori_normalized_counts,file = "./processed_data_file/ori_normalized_counts.csv",row.names = TRUE)
+
+quality_control(analyseddata) 
+# selectedgenes <- assay(vsdtrans)[TFs,]
+# pheatmap(selectedgenes,display_numbers = FALSE,number_color = 
+#           "black",cluster_rows=FALSE,cluster_cols=FALSE,scale="row")
+
+#---- save processed data files ---#
+
+filename <- "./processed_data_file/L3 vs 0h.csv"
+res <- results(analyseddata,contrast=c("Condition","0h","L3"))
+write.csv(as.data.frame(res),file=filename)
+
+filename <- "./processed_data_file/0h vs 2h.csv"
+res <- results(analyseddata,contrast=c("Condition","2h","0h"))
+write.csv(as.data.frame(res),file=filename)
+
+filename <- "./processed_data_file/L3 vs 2h.csv"
+res <- results(analyseddata,contrast=c("Condition","2h","L3"))
+write.csv(as.data.frame(res),file=filename)
+```
+
+delete L3-1 0h-3 2h-1
+do not use
+```{r}
+ori_datatrix<-read_matrix("./raw_data_file/L30h2hAPF_rawcounts.csv")
+datatrix <- ori_datatrix[,!(colnames(ori_datatrix) %in% c("C-L3-T5-1","0h-T5-3"))]
+grouping_file<-make_grouping_file(datatrix,levels=c("L3","0h","2h"))
+dataset<-prefilter(datatrix)
+dmatrix<-make_dds(dataset, grouping_file)
+analyseddata <- DESeq(dmatrix)
+
+normalized_counts <- counts(analyseddata, normalized=TRUE)  #得到标准化后的counts
+write.csv(normalized_counts,file = "./processed_data_file/normalized_counts.csv",row.names = TRUE)
+
+
+```
+
+此代码在输出DEGslist到RcisTarget过程中复用
+```{r}
+
+res1 <- DEGs("./processed_data_file/L3 vs 0h.csv",FC = 1,padj = 0.01) 
+#1.2倍改变，0.3的padj,FC = 0.26,padj = 0.3
+
+res2 <- DEGs("./processed_data_file/0h vs 2h.csv",FC = 1,padj = 0.01)
+
+# 从DEGs返回的列表[上调基因，下调基因]中取出差异基因列表
+# 上调基因：0h < 2h, L3 < 0h, FC>0 为上调
+upgene_1 <- res1[1]
+upgene_2 <- res2[1]
+downgene_1 <- res1[2]
+downgene_2 <- res2[2]
+
+#对这些差异基因取并集，得到合并之后的差异表达基因
+#（至少在L3->APF0h或0h->2h的一个过程中差异表达的基因）
+merged_DEGslist = Reduce(union,c(upgene_1,downgene_1,upgene_2,downgene_2))
+
+#输出差异基因列表，复制之后使用flybase的批量下载功能获得注释
+# write.csv(merged_DEGslist,"DEGslist.csv",row.names = FALSE, quote = FALSE)
+
+#下面的代码是给RcisTarget的输入基因列表
+write.csv(upgene_1,"./processed_data_file/1_up_DEGslist.csv",row.names = FALSE, quote = FALSE)
+write.csv(upgene_2,"./processed_data_file/2_up_DEGslist.csv",row.names = FALSE, quote = FALSE)
+write.csv(downgene_1,"./processed_data_file/1_down_DEGslist.csv",row.names = FALSE, quote = FALSE)
+write.csv(downgene_2,"./processed_data_file/2_down_DEGslist.csv",row.names = FALSE, quote = FALSE)
+```
+
+## 绘制指定基因的表达
+### 使用normalized counts
+```{r}
+library(ggpubr)
+mytheme2 <- theme(plot.title = element_text(size = 15,color="black",hjust = 0.5),
+                 axis.title = element_text(size = 15,color ="black"), 
+                 axis.text.x = element_text(size = 15,color = "black"),
+                 axis.text.y = element_text(size = 15,color = "black"),
+                 panel.background = element_rect(fill = "white"),
+                 panel.grid.minor.y = element_blank(),
+                 panel.grid.minor.x = element_blank(),
+                 panel.grid=element_blank(),
+                 legend.position = "bottom",
+                 legend.text = element_text(size= 15),
+                 legend.title= element_text(size= 15)) 
+
+ori_normalized_counts <- counts(analyseddata, normalized=TRUE)  #得到标准化后的counts
+# colnames(ori_normalized_counts) 
+colnames(ori_normalized_counts) <- strsplit(colnames(ori_normalized_counts),"-", fixed=TRUE) %>% sapply(., function(x){x[x %in% c("L3","0h","2h")]})
+
+ltable <- reshape2::melt(ori_normalized_counts)
+colnames(ltable) <- c("gene","type","expression")
+
+## 指定基因在L3-0h-2h的表达时间变化 折线图
+### 误差线为+- SE
+for(gene in c("fng", "ttv", "sotv", "botv")){
+# selected_gene <- ltable[ltable$gene==gene,]
+# ggobj <- ggplot(selected_gene,aes(x=type,y=expression,group=type,color=type))+ geom_point()+ stat_summary(fun = mean,geom = "point",color="black",size=2)+
+#    theme_classic()+mytheme2+ggtitle(gene)
+# ggsave(paste0(gene,".png"),plot = ggobj,device = "png",height = 4,width = 6)
+
+selected_gene <- ltable[ltable$gene==gene,] %>% Rmisc::summarySE(.,measurevar="expression",groupvars = "type")
+# selected_gene_mean <- aggregate(selected_gene$expression,by=list(type=selected_gene$type),mean)
+# colnames(selected_gene_mean) <- c("type","expression")
+ggobj <- ggplot(selected_gene,aes(x=factor(type, levels = c("L3","0h","2h")),y=expression))+ geom_point(color="black")+geom_line(aes(group=1))+geom_errorbar(aes(ymin=expression-se,ymax=expression+se),width=0.2) + theme_classic()+mytheme2+ggtitle(gene)+xlab("stage")
+ggsave(paste0("./figures/",gene,".png"),plot = ggobj,device = "png",height = 4,width = 6)
+
+}
+
+```
+
+
+## GO and KEGG 分析 (use GO/KEGG for ORA analysis)
+### selected pathways
+https://doi.org/10.1016/j.xinn.2021.100141
+```{r}
+library(org.Dm.eg.db)
+library(clusterProfiler)
+
+temp_func <- function(x){
+  genes <- bitr(Reduce(c, x) ,fromType="SYMBOL",toType=c("ENTREZID","ENSEMBL"),
+                 OrgDb = org.Dm.eg.db)
+  enrich.go <- enrichGO(gene = genes$ENTREZID,
+                        OrgDb = org.Dm.eg.db,
+                        keyType = 'ENTREZID',
+                        ont = 'BP', #可选 BP、MF、CC，也可以指定 ALL 同时计算 3 者
+                        pAdjustMethod = 'fdr', 
+                        pvalueCutoff = 0.01, 
+                        qvalueCutoff = 0.2, 
+                        readable = TRUE)
+  df <- enrich.go@result %>% filter(p.adjust<0.05) %>% mutate(enrichment_factor=compute_ratio(GeneRatio)/compute_ratio(BgRatio))
+}
+```
+
+```{r}
+identifier <- "L3 vs 0h"
+# res <- DEGs(paste0("./processed_data_file/",identifier,".csv"), FC = 1, padj = 0.01)
+res <- DEGs(paste0("./GO L3-0h-2h with mfuzz 1-12/",identifier,".csv"), FC = 1, padj = 0.01)
+genes <- bitr(res[[1]] ,fromType="SYMBOL",toType=c("ENTREZID","ENSEMBL"),
+                 OrgDb = org.Dm.eg.db)
+enrich.go <- enrichGO(gene = genes$ENTREZID,
+                      OrgDb = org.Dm.eg.db,
+                      keyType = 'ENTREZID',
+                      ont = 'BP', #可选 BP、MF、CC，也可以指定 ALL 同时计算 3 者
+                      pAdjustMethod = 'fdr', 
+                      pvalueCutoff = 0.01, 
+                      qvalueCutoff = 0.01, 
+                      readable = TRUE)
+df1 <- enrich.go@result %>% filter(p.adjust<0.05) %>% mutate(enrichment_factor=compute_ratio(GeneRatio)/compute_ratio(BgRatio))
+
+df1 <- df1 %>% filter(rownames(df1) %in%c("GO:0045216","GO:0051130","GO:0006486","GO:0043413","GO:0032970","GO:0070085","GO:0022604")) %>% arrange(desc(enrichment_factor))
+
+
+ggplot(df1, aes(
+  x = enrichment_factor,
+  y = factor(ID, levels = rev(unique(ID))),
+  fill = p.adjust
+)) + geom_col() + scale_y_discrete(limits = rev(df1$ID), labels = rev(df1$Description)) + ylab(NULL) + scale_fill_gradient(low = "#fd9999", high = "#b1d6fb") + ggtitle(identifier) + theme_bw() + theme(
+  text = element_text(colour = "black", size = 16),
+  plot.title = element_text(
+    size = 16,
+    color = "black",
+    hjust = 0.5
+  ),
+  axis.title = element_text(size = 16, color = "black"),
+  axis.text = element_text(size = 16, color = "black"),
+  panel.grid = element_blank()
+)
+
+ggsave(paste0("./figures/selected_pathways",identifier,".tiff"), dpi=256, height = 3, width = 10)
+
+# write.csv(enrich.go@result,file = "L3 vs 0h up GO.csv")
+```
+## volcano plot
+```{r}
+FC=1
+padj=0.01
+sf <- as.data.frame(read.csv(paste0("./GO L3-0h-2h with mfuzz 1-12/",identifier,".csv")))
+sf <- mutate_all(sf, ~replace(., is.na(.), 0)) 
+sf$threshold <- factor(ifelse(sf$padj < padj & abs(sf$log2FoldChange) >= FC,
+                              ifelse(sf$log2FoldChange >= FC, "Up", "Down"), "NoSignifi"
+),
+levels = c("Up", "Down", "NoSignifi")
+)
+orderedsf <- sf[order(sf$log2FoldChange), ]
+
+label_data <- orderedsf %>% filter(X %in% c("SiaT","mmy","kud","meigo","CG33774","Dad1","Ostgamma","CG11999","CG32276","CG3792"))
+
+
+# orderedsf$Label <- NULL
+# orderedsf$Label[match(topssf, orderedsf$X)] <- topssf
+  
+ggplot(orderedsf, aes(x = log2FoldChange, y = -log10(padj), color = threshold)) +
+  geom_point() +
+  scale_color_manual(values = c("#CC0000", "#2f5688", "#BBBBBB")) +
+  geom_text_repel(
+    data = label_data,
+    aes(label = X), min.segment.length=0.1,
+    size = 4, color='black', xlim=c(1,10),
+    segment.color = "black", show.legend = FALSE
+  ) +
+  theme_bw() +
+  theme(
+    legend.title = element_blank()
+  ) +
+  ylab("-log10 (p-adj)") +
+  xlab("log2 (FoldChange)") +
+  geom_vline(xintercept = c(-FC, FC), lty = 3, col = "black", lwd = 0.5) +
+  geom_hline(yintercept = c(0, 2), lty = 3, col = "black", lwd = 0.5) + ylim(0,15) + xlim(-10, 10)
+
+ggsave("./figures/GO_vocanoplot.png", dpi=256, width = 6, height = 4)
+```
+
+
+### L3-0h 0h-2hAPF GO
+```{r fig.width=8, fig.height=2}
+compute_ratio <- function(x){sapply(x, function(y){parse(text=y) %>% eval()})} 
+res1 <- DEGs("./processed_data_file/L3 vs 0h.csv", FC = 0.5, padj = 0.01)
+res2 <- DEGs("./processed_data_file/L3 vs 2h.csv", FC = 0.5, padj = 0.01) 
+# View(read.csv("./processed_data_file/L3 vs 0h.csv"))
+  
+df1 <- temp_func(res1)
+df2 <- temp_func(res2)
+
+GO_signif <- inner_join(df1, df2, by='ID') 
+colnames(GO_signif)
+ggplot(GO_signif %>% filter(ID %in%c("GO:0006487", "GO:0006096", "GO:0006006", "GO:0042593")), aes(x=0, y=factor(Description.x))) + 
+  geom_segment(aes(x=enrichment_factor.y, xend=enrichment_factor.x,  yend=..y..)) + geom_point(aes(x=enrichment_factor.x), color="#4591c7" , size=3) + geom_point(aes(x=enrichment_factor.y), color="#ff5a2c", size=3) + xlim(0,NA) + labs(x="enrichment factor", y="GO term") + theme_bw() + mytheme2
+
+write.csv(df, "./processed_data_file/GO_signifL3-0h_L3-2h.csv")
+```
+
+### GSEA from GO terms
+```{r}
+df <- as.data.frame(read.csv("./processed_data_file/L3 vs 0h.csv", row.names = 1))
+df$geneName <- rownames(df)
+
+df_sorted <- df %>% arrange(desc(log2FoldChange))
+gene_list <- df_sorted$log2FoldChange
+names(gene_list) <- bitr(df_sorted$geneName ,fromType="SYMBOL",toType="ENTREZID", OrgDb = org.Dm.eg.db, drop = FALSE)$ENTREZID
+gene_list <- gene_list[!is.na(names(gene_list))]
+
+gsea <- gseGO(gene_list, ont="BP", OrgDb = org.Dm.eg.db, keyType = "ENTREZID")
+View(gsea@result)
+
+```
+
+1
+delete L3-1,0h-3,2h-1
+```{r}
+ori_datatrix<-read_matrix("ddd.csv")
+grouping_file<-make_grouping_file(ori_datatrix,c("L3","L3","L3","L3","0h","0h","0h","0h","2h","2h","2h","2h"))
+dataset<-prefilter(ori_datatrix)
+
+grouping_file<-make_grouping_file(datatrix,c("L3","L3","L3","0h","0h","0h","2h","2h","2h"))
+dataset<-prefilter(datatrix)
+dmatrix<-make_dds(dataset,grouping_file)
+analyseddata <- DESeq(dmatrix)
+normalized_counts <- counts(analyseddata, normalized=TRUE)  #得到标准化后的counts
+# write.csv(normalized_counts,file = "normalized_counts.csv")
+quality_control(analyseddata)
+selectedgenes <- assay(vsdtrans)[TFs,]
+pheatmap(selectedgenes,display_numbers = FALSE,number_color = 
+          "black",cluster_rows=FALSE,cluster_cols=FALSE,scale="row")
+```
+
+
+L3 vs 0h
+```{r}
+filename <- "1_L3 vs 0h.csv"
+res <- results(analyseddata,contrast=c("Condition","0h","L3"))
+write.csv(as.data.frame(res),file=filename)
+vo_plot(filename)
+heat_map()
+```
+
+0h vs 2h
+```{r}
+filename <- "1_0h vs 2h.csv"
+res <- results(analyseddata,contrast=c("Condition","2h","0h"))
+write.csv(as.data.frame(res),file=filename)
+vo_plot(filename)
+res1 <- DEGs(filename)
+heat_map()
+```
+
+```{r}
+filename <- "1_all.png"
+# print venn plot
+suppressMessages(library(VennDiagram))
+suppressMessages(library(EBImage))
+res1 <- DEGs("1_L3 vs 0h.csv",FC = 0.5,padj = 0.05)
+res2 <- DEGs("1_0h vs 2h.csv",FC = 0.5,padj = 0.05)
+upgene_1 <- res1[1]
+upgene_2 <- res2[1]
+downgene_1 <- res1[2]
+downgene_2 <- res2[2]
+
+DEGslist = c(upgene_1,downgene_1,upgene_2,downgene_2)
+merged_DEGslist = Reduce(union,c(upgene_1,downgene_1,upgene_2,downgene_2))
+write.csv(merged_DEGslist,"DEGslist.csv",row.names = FALSE, quote = FALSE)
+names(DEGslist) = c("L3 to 0h_up","L3 to 0h_down","0h to 2h_up","0h to 2h_down")
+
+venn.diagram(DEGslist, 
+             filename = filename,imagetype = "png",
+             resolution = 400,fontfamily = "sans",
+             fill =brewer.pal(4, "Set3"),
+             alpha = 0.50)
+display(readImage(filename), method="raster")
+
+
+inter <- get.venn.partitions(DEGslist)
+filename <- "1_all.csv"
+for (i in 1:nrow(inter)) 
+  inter[i,'values'] <- paste(inter[[i,'..values..']], collapse = ', ')
+inter <- inter[-c(5, 6)]
+inter <- inter[which(inter$..count..>0),] 
+write.csv(inter, filename, row.names = FALSE, quote = FALSE)
+inter
+```
+
+# Mfuzz
+```{r}
+Genes_of_interest <- merged_DEGslist
+
+ori_datatrix<-read_matrix("L30h2hAPF_rawcounts.csv")
+grouping_file<-make_grouping_file(ori_datatrix,c("L3","L3","L3","L3","0h","0h","0h","0h","2h","2h","2h","2h"))
+dataset<-prefilter(ori_datatrix)
+dmatrix<-make_dds(dataset,grouping_file,Condition)
+analyseddata <- DESeq(dmatrix)
+
+normalized_counts <- counts(analyseddata, normalized=TRUE) 
+write.csv(normalized_counts,file = "normalized_counts.csv")
+
+quality_control(analyseddata)
+selectedgenes <- assay(vsdtrans)[Genes_of_interest,]
+pheatmap(selectedgenes,display_numbers = FALSE,number_color = 
+          "black",cluster_rows=FALSE,cluster_cols=FALSE,scale="row")
+
+
+rm(eset)
+DEGs_normalized_counts <- normalized_counts[Genes_of_interest,]
+eset <- matrix()
+eset <- cbind(apply(DEGs_normalized_counts[,1:4],1,mean,na.rm=T),
+              apply(DEGs_normalized_counts[,5:8],1,mean,na.rm=T),
+              apply(DEGs_normalized_counts[,9:12],1,mean,na.rm=T))
+colnames(eset) <- c("L3","0h","2h") #要对一个时间内的所有三个样本做平均
+eset <- new('ExpressionSet',exprs = eset) 
+eset <- filter.std(eset, min.std = 0)
+
+
+seset <- standardise(eset)
+set.seed(17) #软聚类
+cl <- mfuzz(seset, 6, mestimate(eset)) #第二个参数是聚类个数，第三个是模糊化参数fuzzification parameter.
+
+mfuzz.plot(seset, cl = cl, mfrow = c(2, 3), colo = palette(rainbow(12)),time.labels = seq(0,4,2), min.mem=0.1,new.window=FALSE)
+```
+
+
+
+```{r}
+cl$size
+cluster_result <- data.frame(cl$cluster) %>% arrange(cl.cluster)
+write.csv(cluster_result,"mfuzz_result.csv")
+
+
+
+cluster_genename <- function(clusterlist){
+  genename <- colnames(data.frame(as.list(clusterlist)))
+  lapply(genename, function(s){sub(".",replacement = "-",s,fixed = T)}) %>% as.character()
+}
+
+
+nm <- cluster_genename(cl$cluster[cl$cluster == 1])
+tt <- c("trh","mirr")
+```
+
+
+```{r}
+selectedgenes <- assay(vsdtrans)[
+                  intersect(rownames(cluster_result),rownames(assay(vsdtrans))),]
+pheatmap(selectedgenes,display_numbers = FALSE,number_color = 
+          "black",cluster_rows=FALSE,cluster_cols=FALSE,scale="row",show_rownames=F)
+```
+
+## 分析每个cluster的基因和GO
+```{r}
+genes <- bitr(cluster_genename(cl$cluster[cl$cluster == 3]) ,fromType="SYMBOL",toType=c("ENTREZID","ENSEMBL"),
+              OrgDb = org.Dm.eg.db)
+
+enrich.go <- enrichGO(gene = genes$ENTREZID, #基因列表文件中的基因名称
+                        OrgDb = org.Dm.eg.db,
+                        keyType = 'ENTREZID',
+                        ont = 'BP', #可选 BP、MF、CC，也可以指定 ALL 同时计算 3 者
+                        pAdjustMethod = 'fdr', 
+                        pvalueCutoff = 0.01, 
+                        qvalueCutoff = 0.2, 
+                        readable = TRUE)
+
+
+dotplot(enrich.go,title = "Cluster3 genes",showCategory = 20)
+dotplot(enrich.go)
+cnetplot(enrich.go)
+# write.csv(enrich.go@result,file = "cluster3 mufzz gene.csv")
+```
+
+
+
