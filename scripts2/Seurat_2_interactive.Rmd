@@ -1,0 +1,94 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+# seurat
+
+## Setup the Seurat Object
+
+```{r}
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(loomR)
+library(Matrix)
+library(future)
+# Enable parallelization
+#muilt-
+#NormalizeData()
+# ScaleData()
+# JackStraw()
+# FindMarkers()
+# FindIntegrationAnchors()
+# FindClusters() - if clustering over multiple resolutions
+plan("multiprocess", workers = 6)
+```
+
+
+```{r labelplot1, fig.height=5, fig.width=5}
+larva <- readRDS("larva_final.rds")
+#metadatacluster
+Idents(larva) <- larva@meta.data[["seurat_clusters"]]
+
+#12markers
+cluster1.markers <- FindMarkers(larva, ident.1 = 1, ident.2 = 2, min.pct = 0.3,
+                                logfc.threshold = 0.5)
+cluster1.markers
+
+#feature plot，feature
+#feature plot
+IFeaturePlot(larva,feature = "H15")
+
+```
+
+##
+```{r labelplot, fig.height=5, fig.width=5}
+#,select.cells，
+select.cells <- CellSelector(plot = DimPlot(larva, reduction = "umap"))
+
+#
+Idents(larva,cells = select.cells) <- "selected"
+levels(larva)
+DimPlot(larva,reduction = "umap",label = T)
+
+#markers
+selected.cells.markers <- FindMarkers(larva, ident.1 = "selected", ident.2 = levels(larva)[levels(larva)!="selected"], min.pct = 0.4,
+                                logfc.threshold = 0.5)
+
+#dataframe
+selected.cells.markers
+
+#clusters，
+larva_principle_clusters <- subset(larva,idents = c(0:5,"selected"))
+```
+##ggplot2label
+```{r}
+plot <- DimPlot(larva, reduction = "tsne") + NoLegend()
+LabelClusters(plot = plot, id = "ident")
+```
+
+##clustersmarkers
+```{r labelplot , fig.height=10, fig.width=20}
+#
+VlnPlot(larva_principle_clusters, features <- head(rownames(selected.cells.markers),9),pt.size=0)
+#UMAP
+FeaturePlot(larva, features = head(rownames(selected.cells.markers),9))
+#
+RidgePlot(larva_principle_clusters, features = head(rownames(selected.cells.markers),8), ncol = 2)
+#
+DotPlot(larva,features = head(rownames(selected.cells.markers),20))
+#heat map
+DoHeatmap(larva_principle_clusters, features = head(rownames(selected.cells.markers),100)) + NoLegend()
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

@@ -11,3 +11,4 @@ data_tables/processed_data_file
 *.rds
 SCENIC/
 bulkRNA-seq/GO L3-0h-2h with mfuzz 1-12/*
+scripts/

@@ -1,0 +1,75 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+#read10x
+hsd_larva.counts <- Read10X(data.dir = './hsd_data/')
+# Initialize the Seurat object with the raw (non-normalized data)
+#seurat
+hsd_larva <- CreateSeuratObject(counts = hsd_larva.counts, project = 'HSD_larva',min.cells = 3, min.features = 200)
+
+hsd_larva[["percent.mt"]] <- PercentageFeatureSet(hsd_larva, pattern = "^mt:")
+
+#QC
+head(hsd_larva@meta.data, 5)
+
+VlnPlot(hsd_larva, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+plot1 <- FeatureScatter(hsd_larva, feature1 = "nCount_RNA", feature2 = "percent.mt") 
+plot2 <- FeatureScatter(hsd_larva, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") 
+plot1 + plot2
+```
+
+
+```{r}
+hsd_larva <- subset(hsd_larva, subset = nFeature_RNA > 200 & nFeature_RNA < 4000 & nCount_RNA > 1000 &  nCount_RNA < 30000 & percent.mt < 25)
+```
+
+```{r normalize & var_features, fig.height=5, fig.width=10}
+#data slotnormalized
+hsd_larva <- NormalizeData(hsd_larva, normalization.method = "LogNormalize", scale.factor = 10000)
+hsd_larva <- FindVariableFeatures(hsd_larva, selection.method = 'vst', nfeatures = 2000)
+
+#
+hsd_larva@assays[["RNA"]]@meta.features %>% slice_max(n = 10, order_by = vst.variance.standardized)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(hsd_larva), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(hsd_larva)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 + plot2
+```
+
+```{r}
+all.genes <- rownames(hsd_larva)
+hsd_larva <- ScaleData(hsd_larva, features = all.genes)
+hsd_larva <- RunPCA(hsd_larva, features = VariableFeatures(object = hsd_larva))
+
+# Examine and visualize PCA results a few different ways
+# print(hsd_larva[['pca']], dims = 1:5, nfeatures = 5)
+VizDimLoadings(hsd_larva, dims = 1:2, reduction = 'pca')
+DimPlot(hsd_larva, reduction = 'pca')
+DimHeatmap(hsd_larva, dims = 1, cells = 500, balanced = TRUE)
+hsd_larva <- FindNeighbors(hsd_larva, dims = 1:20)
+hsd_larva <- FindClusters(hsd_larva, resolution = 0.2)
+
+hsd_larva <- RunUMAP(hsd_larva, dims = 1:20, n.neighbors = 50L)
+
+DimPlot(hsd_larva, reduction = 'umap',label = T,pt.size = 0.8)
+
+DimPlot(hsd_larva, reduction = 'umap',label = T,pt.size = 0.8)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

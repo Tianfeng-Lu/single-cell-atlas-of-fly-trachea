@@ -1,0 +1,140 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r setup, include=FALSE}
+getwd()
+knitr::opts_knit$set(root.dir = "/home/zju/tianfeng/single_cell_atlas")
+# setwd("/home/zju/tianfeng/single_cell_atlas")
+# getwd()
+```
+
+```{r}
+source("./utils/tianfengRwrappers.R")
+source("./utils/XGBoost_wrapper.R")
+```
+
+# load dataset
+```{r}
+ctrl_filtered <- readRDS("./processed_data_file/ctrl_filtered.rds")
+HSD_filtered <- readRDS("./processed_data_file/HSD_filtered.rds")
+```
+
+
+```{r}
+# selected_features <-intersect(FindVariableFeatures(ds1, nfeatures = 200)@assays[["SCT"]]@var.features,
+#                               FindVariableFeatures(ds2, nfeatures = 200)@assays[["SCT"]]@var.features) %>%
+#   intersect(FindVariableFeatures(ds0, nfeatures = 200)@assays[["SCT"]]@var.features)
+
+## ctrlref
+ctrl_filtered$celltype <- droplevels(ctrl_filtered$celltype)
+HSD_filtered$celltype <- droplevels(HSD_filtered$celltype)
+
+ctrl_filtered$xgboost_label <- ctrl_filtered$celltype
+levels(ctrl_filtered$xgboost_label) <- levels(ctrl_filtered$celltype) %>% length() %>% seq(.)-1
+Idents(ctrl_filtered) <- ctrl_filtered$xgboost_label
+
+HSD_filtered$xgboost_label <- HSD_filtered$celltype
+levels(HSD_filtered$xgboost_label) <- levels(HSD_filtered$celltype) %>% length() %>% seq(.)-1
+Idents(HSD_filtered) <- HSD_filtered$xgboost_label
+
+bst_model <- XGBoost_train_from_seuobj(ctrl_filtered)
+HSD_filtered <- XGBoost_predict_from_seuobj(HSD_filtered, bst_model)
+HSD_filtered <- project2ref_celltype(HSD_filtered, ctrl_filtered, ref_labels = c("xgboost_label","celltype"))
+
+ctrl_filtered <- XGBoost_predict_from_seuobj(ctrl_filtered, bst_model)
+ctrl_filtered <- project2ref_celltype(ctrl_filtered, ctrl_filtered, ref_labels = c("xgboost_label","celltype"))
+
+# Idents(ds2) <- ds2$Classification1
+# ref_sce <- mkref_scmap_from_seuobj(ds2)
+# ds1 <- query_scmap_from_refsce(ds1, ref_sce)
+# ds0 <- query_scmap_from_refsce(ds0, ref_sce)
+
+umapplot(ctrl_filtered, group.by = "ref_celltype")
+umapplot(HSD_filtered, group.by = "ref_celltype")
+
+# umapplot(ds1, group.by = "scmap_idents")
+# umapplot(ds0, group.by = "scmap_idents")
+```
+```{r}
+confuse_mat <- XGBoost_predict_from_seuobj(HSD_filtered, bst_model, return_confuse_matrix = T)
+
+label1 = dimnames(confuse_mat)$pre
+label2 = dimnames(confuse_mat)$true
+
+confuse_mat <- confuse_mat[match(label2,label1),]
+
+sources <- rep(0:(length(label1) - 1), each = length(label2)) # eachtimes
+colors <- rep(aero_colors_list[c(1:9)], each = length(label2))
+targets <- rep(length(label1) + 0:(length(label2) - 1), times = length(label1))
+
+plot_ly(
+    type = "sankey", orientation = "h",
+    node = list(
+        label = c(levels(ctrl_filtered$celltype),"unassigned",levels(HSD_filtered$celltype)),
+        color = c(colors_list[c(1:9)], "black",colors_list[c(1:9)]), pad = 15, thickness = 30,
+        line = list(color = "black", width = 1)
+    ),
+    link = list(
+        source = sources, target = targets,
+        value = as.numeric(confuse_mat),
+        color = colors
+    )
+) %>% layout(title = "Ctrl as ref", font = list(family = "Arial", size = 20, color = "black"))
+```
+
+# scmap
+```{r}
+ref_sce <- mkref_scmap_from_seuobj(ctrl_filtered)
+HSD_filtered <- query_scmap_from_refsce(HSD_filtered, ref_sce, ref_labels = 'celltype')
+```
+
+
+```{r}
+umapplot(HSD_filtered,group.by = "scmap_idents")
+```
+```{r}
+confuse_mat <- table(HSD_filtered$scmap_idents,HSD_filtered$celltype)
+label1 = dimnames(confuse_mat)[[1]]
+label2 = dimnames(confuse_mat)[[2]]
+
+confuse_mat <- confuse_mat[match(label2,label1),]
+label1 = dimnames(confuse_mat)[[1]]
+label2 = dimnames(confuse_mat)[[2]]
+
+confuse_mat2 <- confuse_mat - diag(diag(confuse_mat))
+prop_confuse_mat2 <- prop_confuse_mat - diag(diag(prop_confuse_mat))
+
+sources <- rep(0:(length(label1) - 1), each = length(label2)) # eachtimes
+colors <- rep(aero_colors_list[c(1:9)], each = length(label2))
+targets <- rep(length(label1) + 0:(length(label2) - 1), times = length(label1))
+
+plot_ly(
+    type = "sankey", orientation = "h",
+    node = list(
+        label = c(label2,label2),
+        color = c(colors_list[c(1:9)], "black",colors_list[c(1:9)]), pad = 15, thickness = 30,
+        line = list(color = "black", width = 1)
+    ),
+    link = list(
+        source = sources, target = targets,
+        value = as.numeric(prop_confuse_mat),
+        color = colors
+    )
+) %>% layout(title = "Ctrl as ref", font = list(family = "Arial", size = 20, color = "black"))
+```
+```{r}
+prop_confuse_mat <- prop.table(confuse_mat,margin = 1)
+prop_confuse_mat2
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

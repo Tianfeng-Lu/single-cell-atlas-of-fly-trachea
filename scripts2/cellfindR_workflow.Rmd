@@ -1,0 +1,93 @@
+---
+title: "cellfindR_workflow"
+author: "lu tianfeng"
+date: "2021/11/30"
+output: html_document
+
+---
+
+CellFindR workflow
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+larva <- readRDS("./larva.rds")
+library(stringr)
+library(ggplot2)
+library(RColorBrewer)
+library(future)
+plan("multiprocess", workers = 8)
+options(future.rng.onMisue = "ignore")
+source("new_CellFindR.R")
+
+larva <- FindNeighbors(larva, dims = 1:20)
+larva <- FindClusters(larva, resolution = 0.2)
+
+DimPlot(larva, reduction = "umap")
+larva <- RenameIdents(larva,'1'='DT','4'='DT','0' = 'DB','2' = 'VB','3' = "SB",'5' = "TC",'6' = "VB",'8' = "PC",'7' = "Unannotated",'9' = "TC",'10' = "FB",'11' = "NE",'12' = "carcass",'13' = "FB",'14' = "SG",'15' = "CB")
+
+larva <- subset(larva,idents = c("DT","DB","DT","SB","TC","VB","NE","PC"),invert  = FALSE)
+
+#saveRDS(larva,file = "larva_trachea.rds")
+
+DimPlot(larva,reduction = "umap",label = TRUE)
+```
+
+# find_res
+## finds resolution that satisfy
+## input: tenx object
+## initial_res: initial resolution of starting clustering
+## jump: how much to increment up 
+## thresh_genes: threshold of genes
+## thresh_val: value of the threshold
+##           subgroup，   jump    
+##         0.5(       )
+##        ：findmarkers     
+##     FC    thresh_genes = 10 markers  
+##   pval = 1e-4
+##       thresh_val = log(2)
+##             ，     
+
+```{r}
+#res <- 0.6
+# res <- find_res(larva, initial_res = 0.1, jump = 0.01)
+#larva <- FindClusters(larva, resolution = 0.2)
+```
+
+# sub_clustering
+#    find_res      res
+#     seurat::FindClusters    res      
+#   find_res            cluster
+```{r}
+output_folder <- "./cell_findR"
+dir.create(output_folder)
+
+larva <- sub_clustering(larva, output_folder,thresh_genes = 20, thresh_val = 0.8, pval = 1e-4)
+
+sublarva <- subset(larva,idents = c("NE"))
+sublarva <- sub_clustering(sublarva, output_folder,thresh_genes = 20, thresh_val = 0.8, pval = 1e-4)
+
+larva <-SetIdent(larva, value = 'CellfindR')
+levels(larva) <-str_sort(levels(larva), numeric = TRUE)
+```
+
+#  FindMarkers(tenx, ident.1 = j, min.pct = 0.3, logfc.threshold = 0.3)
+```{r}
+z <- get_matrix(larva)
+write.csv(z, "Table1.csv")
+a <- get_stats(larva)
+write.csv(a, "Table2.csv")
+marker <- FindAllMarkers(larva)
+write.csv(marker, "Table3.csv")
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
