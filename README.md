@@ -2,7 +2,7 @@
 Analysis and visualization code for the following article:
 Li Y, Lu T, Dong P, Chen J, Zhao Q, Wang Y, Xiao T, Wu H, Zhao Q and Huang H. A single-cell atlas of Drosophila trachea reveals glycosylation-mediated Notch signaling in cell fate specification.
 
-The processed data will be available in zenodo for reproducing main figures in the article and further exploration. You can start anywhere after loading `.rds` files with the same name as dependent variables.
+The processed data files are available with `doi: 10.5281/zenodo.10139562` for reproducing main figures in the article and further exploration. You can start anywhere after loading `.rds` files with the same name as dependent variables.
 
 ## Single cell RNA-seq analysis
 ### Preprocess

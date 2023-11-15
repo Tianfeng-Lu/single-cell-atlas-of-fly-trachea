@@ -4,3 +4,4 @@ temp/*
 .Rproj.user
 *.rds
 *.h5ad
+*.zip
