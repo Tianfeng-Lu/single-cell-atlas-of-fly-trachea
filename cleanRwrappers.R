@@ -12,7 +12,7 @@ colors_list <- c(
     "#6dc0a6", "#e2b398", "#e2a2ca", "#d1eba8", "#b1d6fb",
     "#fd9999", "#fbd69d", "#e28372", "#aeb3fb", "#c19efa", RColorBrewer::brewer.pal(9, name = "Set1")
 )
-aero_colors_list <- as.character(lapply(colors_list, paste0, "80")) # 透明化颜色
+aero_colors_list <- as.character(lapply(colors_list, paste0, "80"))
 
 message(
 "--------- Color Schemes ---------

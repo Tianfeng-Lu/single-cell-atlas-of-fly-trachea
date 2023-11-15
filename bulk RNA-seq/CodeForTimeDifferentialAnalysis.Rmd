@@ -3,7 +3,7 @@ title: "Smartseq L3 0hAPF 2hAPF"
 output: html_notebook
 ---
 
-update: 20230720
+Last update: 20231115
 
 # analysis for gene expression change via bulk RNA-seq in L3 -> 0h
 

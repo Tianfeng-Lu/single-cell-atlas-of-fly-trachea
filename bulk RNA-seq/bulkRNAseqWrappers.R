@@ -1,17 +1,6 @@
 # bulkRNA-seq wrappers ----------------------------------------------------------
 # create: 5th Nov., 2021
 # last updated: 2023/7/21
-## Features
-# 1. 可复用的函数
-# 2. 快速删除指定实验组，并执行QC的方法
-# 3. 改进的PCA图
-
-# ## 能做什么？
-# 1. Deseq2 分析和标准流程，输出实验组之间的差异表达基因
-# 2. 差异表达基因的可视化
-# 3. mfuzz包实现时间序列分析
-# 4. RcisTarget对差异表达基因进行转录因子搜索
-# 5. clusterProfiler进行富集分析
 
 library(dplyr)
 suppressMessages(library(DESeq2))
@@ -89,7 +78,6 @@ DEGs <- function(file_name,FC=2,padj=0.001)#return differently expressed genes
 vo_plot <- function(file_name, FC = 3, padj = 0.001) {
   sf <- as.data.frame(read.csv(file_name))
   sf <- NaRV.omit(sf)
-  ## 设置阈值
   sf$threshold <- factor(ifelse(sf$padj < padj & abs(sf$log2FoldChange) >= FC,
                                 ifelse(sf$log2FoldChange >= FC, "Up", "Down"), "NoSignifi"
   ),
@@ -98,7 +86,6 @@ vo_plot <- function(file_name, FC = 3, padj = 0.001) {
   
   orderedsf <- sf[order(sf$log2FoldChange), ]
   
-  # 在这里选择top n的基因参与后续分析
   uptopsf <<- head(sf$X[which(sf$threshold == "Up")], 10)
   downtopsf <<- head(sf$X[which(sf$threshold == "Down")], 10)
   
@@ -127,8 +114,6 @@ vo_plot <- function(file_name, FC = 3, padj = 0.001) {
     geom_hline(yintercept = c(0, 3), lty = 3, col = "black", lwd = 0.5)
 }
 
-# 根据选中的基因画heatmap
-# 可以选top，也可以指定
 heat_map <- function() {
   selecteddata <- assay(ntdtrans)[c(uptopsf, downtopsf), ]
   pheatmap(selecteddata,
