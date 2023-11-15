@@ -42,6 +42,9 @@ Saved files:
 ### Subclustering
 To further explore gene expression heterogeneity within a cell population, we exploit subclustering to clusters of interest in `subclustering.r`. 
 
+### RNA velocity
+RNA velocity analysis via python package `scvelo`, input file is `ctrl_velo.h5ad`.
+
 
 ## Bulk RNA-seq analysis
 `./bulk RNA-seq/CodeForTimeDifferentialAnalysis.Rmd` provides a pipeline to process bulk RNA-seq raw data via DESeq2. And then performs ORA for DEGs upregulated when L3 -> 0hr. 
