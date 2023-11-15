@@ -1,0 +1,155 @@
+---
+title: "Smartseq L3 0hAPF 2hAPF"
+output: html_notebook
+---
+
+update: 20230720
+
+# analysis for gene expression change via bulk RNA-seq in L3 -> 0h
+
+```{r}
+source("./bulkRNAseqWrappers.R")
+```
+
+
+## Deseq2
+```{r}
+ori_datatrix<-read_matrix("./L30h2hAPF_rawcounts.csv")
+grouping_file<-make_grouping_file(ori_datatrix,levels=c("L3", "0h", "2h"))
+dataset<-prefilter(ori_datatrix)
+dmatrix<-make_dds(dataset,grouping_file)
+analyseddata <- DESeq(dmatrix)
+
+ori_normalized_counts <- counts(analyseddata, normalized=TRUE)  #得到标准化后的counts
+write.csv(ori_normalized_counts,file = "./processed_data_file/ori_normalized_counts.csv",row.names = TRUE)
+
+quality_control(analyseddata) 
+#---- save processed data files ---#
+
+res <- results(analyseddata, contrast=c("Condition","0h", "L3")) # L3 as the baseline: fold change is 0hr/L3
+write.csv(as.data.frame(res),file="./L3 vs 0h.csv")
+
+```
+
+
+## gene expression pattern L3 -> 0hr -> 2hr
+```{r}
+library(ggpubr)
+mytheme2 <- theme(plot.title = element_text(size = 15,color="black",hjust = 0.5),
+                 axis.title = element_text(size = 15,color ="black"), 
+                 axis.text.x = element_text(size = 15,color = "black"),
+                 axis.text.y = element_text(size = 15,color = "black"),
+                 panel.background = element_rect(fill = "white"),
+                 panel.grid.minor.y = element_blank(),
+                 panel.grid.minor.x = element_blank(),
+                 panel.grid=element_blank(),
+                 legend.position = "bottom",
+                 legend.text = element_text(size= 15),
+                 legend.title= element_text(size= 15)) 
+
+ori_normalized_counts <- counts(analyseddata, normalized=TRUE) 
+colnames(ori_normalized_counts) <- strsplit(colnames(ori_normalized_counts),"-", fixed=TRUE) %>% sapply(., function(x){x[x %in% c("L3","0h","2h")]})
+
+ltable <- reshape2::melt(ori_normalized_counts)
+colnames(ltable) <- c("gene","type","expression")
+
+
+for(gene in c("fng", "ttv", "sotv", "botv")){
+# selected_gene <- ltable[ltable$gene==gene,]
+# ggobj <- ggplot(selected_gene,aes(x=type,y=expression,group=type,color=type))+ geom_point()+ stat_summary(fun = mean,geom = "point",color="black",size=2)+
+#    theme_classic()+mytheme2+ggtitle(gene)
+# ggsave(paste0(gene,".png"),plot = ggobj,device = "png",height = 4,width = 6)
+
+selected_gene <- ltable[ltable$gene==gene,] %>% Rmisc::summarySE(.,measurevar="expression",groupvars = "type")
+# selected_gene_mean <- aggregate(selected_gene$expression,by=list(type=selected_gene$type),mean)
+# colnames(selected_gene_mean) <- c("type","expression")
+ggplot(selected_gene,aes(x=factor(type, levels = c("L3","0h","2h")),y=expression))+ geom_point(color="black")+geom_line(aes(group=1))+geom_errorbar(aes(ymin=expression-se,ymax=expression+se),width=0.2) + theme_classic()+mytheme2+ggtitle(gene)+xlab("stage")
+# ggsave(paste0("./figures/",gene,".png"),plot = ggobj,device = "png",height = 4,width = 6)
+
+}
+
+```
+
+
+## ORA
+### fig 6a (updated 11/15)
+cite: https://doi.org/10.1016/j.xinn.2021.100141
+```{r}
+library(org.Dm.eg.db)
+library(clusterProfiler)
+
+res <- DEGs("./L3 vs 0h.csv", FC = 0.5, padj = 0.01)
+# res <- DEGs(paste0("./GO L3-0h-2h with mfuzz 1-12/",identifier,".csv"), FC = 0.5, padj = 0.01)
+genes <- bitr(res[[1]] ,fromType="SYMBOL",toType=c("ENTREZID","ENSEMBL"),
+                 OrgDb = org.Dm.eg.db)
+enrich.go <- enrichGO(gene = genes$ENTREZID,
+                      OrgDb = org.Dm.eg.db,
+                      keyType = 'ENTREZID',
+                      ont = 'BP',
+                      pAdjustMethod = 'fdr', 
+                      pvalueCutoff = 0.01, 
+                      qvalueCutoff = 0.01, 
+                      readable = TRUE)
+df1 <- enrich.go@result %>% filter(p.adjust<0.05) %>% mutate(enrichment_factor=compute_ratio(GeneRatio)/compute_ratio(BgRatio))
+
+df1 <- df1 %>% filter(rownames(df1) %in%c("GO:0045216","GO:0051130","GO:0006486","GO:0043413","GO:0032970","GO:0070085","GO:0022604","GO:0006487", "GO:0006096", "GO:0006006", "GO:0042593")) %>% arrange(desc(enrichment_factor)) %>% distinct(geneID, .keep_all = TRUE) 
+
+
+ggplot(df1, aes(
+  x = enrichment_factor,
+  y = factor(ID, levels = rev(unique(ID))),
+  fill = p.adjust
+)) + geom_col() + scale_y_discrete(limits = rev(df1$ID), labels = rev(df1$Description)) + ylab(NULL) + scale_fill_gradient(low = "#fd9999", high = "#b1d6fb") + ggtitle(paste0(identifier,"r")) + theme_bw() + theme(
+  text = element_text(colour = "black", size = 16),
+  plot.title = element_text(
+    size = 16,
+    color = "black",
+    hjust = 0.5
+  ),
+  axis.title = element_text(size = 16, color = "black"),
+  axis.text = element_text(size = 16, color = "black"),
+  panel.grid = element_blank()
+)
+
+# ggsave(paste0("./figures/selected_pathways_review_",identifier,".tiff"), dpi=256, height = 3, width = 10)
+# write.csv(enrich.go@result,file = "L3 vs 0h up GO.csv")
+```
+
+## volcano plot fig 6b
+```{r}
+FC=1
+padj=0.01
+sf <- as.data.frame(read.csv(paste0("./GO L3-0h-2h with mfuzz 1-12/",identifier,".csv")))
+sf <- mutate_all(sf, ~replace(., is.na(.), 0)) 
+sf$threshold <- factor(ifelse(sf$padj < padj & abs(sf$log2FoldChange) >= FC,
+                              ifelse(sf$log2FoldChange >= FC, "Up", "Down"), "NoSignifi"
+),
+levels = c("Up", "Down", "NoSignifi")
+)
+orderedsf <- sf[order(sf$log2FoldChange), ]
+
+label_data <- orderedsf %>% filter(X %in% c("SiaT","mmy","kud","meigo","CG33774","Dad1","Ostgamma","CG11999","CG32276","CG3792"))
+
+  
+ggplot(orderedsf, aes(x = log2FoldChange, y = -log10(padj), color = threshold)) +
+  geom_point() +
+  scale_color_manual(values = c("#CC0000", "#2f5688", "#BBBBBB")) +
+  geom_text_repel(
+    data = label_data,
+    aes(label = X), min.segment.length=0.1,
+    size = 4, color='black', xlim=c(1,10),
+    segment.color = "black", show.legend = FALSE
+  ) +
+  theme_bw() +
+  theme(
+    legend.title = element_blank()
+  ) +
+  ylab("-log10 (p-adj)") +
+  xlab("log2 (FoldChange)") +
+  geom_vline(xintercept = c(-FC, FC), lty = 3, col = "black", lwd = 0.5) +
+  geom_hline(yintercept = c(0, 2), lty = 3, col = "black", lwd = 0.5) + ylim(0,15) + xlim(-10, 10)
+
+# ggsave("./figures/GO_vocanoplot.png", dpi=256, width = 6, height = 4)
+```
+
+

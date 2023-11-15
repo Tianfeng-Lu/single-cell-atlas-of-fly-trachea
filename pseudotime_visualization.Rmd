@@ -1,0 +1,165 @@
+---
+title: "pseudotime visualization"
+output: html_notebook
+---
+```{r}
+source("cleanRwrappers.R")
+```
+
+# visualization for pseudotime analysis
+```{r}
+PC_DB_DT <- readRDS("./PC_DB_DT_seurat.rds")
+
+color_mapping <- colors_list[1:9]
+names(color_mapping) <- ctrl_filtered$celltype %>% levels()
+```
+
+
+# curve plot in fig7
+```{r}
+# PC_DB_DT <- NormalizeData(PC_DB_DT, assay = "RNA")
+PC_DB_DT@active.assay <- "RNA"
+daf <- FetchData(PC_DB_DT,vars =c("Tom","kni","bs","ct","peb","pseudotime","celltype", "E(spl)m2-BFM","E(spl)m3-HLH","E(spl)mbeta-HLH","E(spl)m7-HLH"), slot='data')
+data <- cbind(daf,index = 1:nrow(daf),cluster = Idents(PC_DB_DT))
+
+ggplot(data,aes(x=pseudotime, y = `kni`)) + geom_point(aes(color = cluster),alpha = 1) + geom_smooth(color = "red") + theme_classic() + ridgetheme + scale_color_manual(values = color_mapping[c('DB',"DT","PC")]) + guides(colour = guide_legend(override.aes = list(size=10))) + ylim(0,NA)
+```
+
+# pseudotime heatmap
+```{r}
+library(viridis)
+cds <- readRDS("./PC_DB_DT_cds.rds")
+pr_test_res <- monocle3::graph_test(cds, neighbor_graph="principal_graph", cores=4)
+time_diff_genes <- pr_test_res %>% filter(p_value<0.001 & q_value<0.001) %>% rownames() %>% intersect(PC_DB_DT@assays[["SCT"]]@var.features)
+PC_DB_DT@active.assay <- "RNA"
+
+pseudotemporal_expression <- FetchData(PC_DB_DT, c("pseudotime", time_diff_genes)) %>% arrange(pseudotime) 
+
+gene_names <- colnames(pseudotemporal_expression)
+
+# # get gradient colors
+cluster_color_mix <- FetchData(PC_DB_DT, c("celltype", "pseudotime"))
+
+genes_of_interest = c("bs","kni",'fng','mmy','peb', "E(spl)m2-BFM","E(spl)m3-HLH","E(spl)mbeta-HLH","E(spl)m7-HLH","Tom" ,"ct","N","Ser","Dl")
+
+```
+
+
+
+```{python}
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+from tqdm import tqdm
+from matplotlib.colors import LinearSegmentedColormap
+
+np.random.seed(143)
+
+ps_expression = np.array(r.pseudotemporal_expression).T
+gene_names = r.gene_names
+
+
+def zero_adjust_fit(x, y, x_interp):
+  '''
+  x, y: 1-d ndarray
+  '''
+  zero_counts_ind = np.where(y==0)[0]
+  remove_idx = np.random.choice(zero_counts_ind, size=int(len(zero_counts_ind)//1.2), replace=False)
+  keep_idx = np.repeat(True, ps_expression.shape[1])
+  keep_idx[remove_idx] = False
+  
+  coefficients = np.polyfit(x[keep_idx], y[keep_idx], 4)
+  fit_polynomial = np.poly1d(coefficients)
+  y_interp = fit_polynomial(x_interp)
+  # print(keep_idx)
+  return y_interp, coefficients
+
+def maxmin_scale(arr, axis = None):
+    if len(arr.shape) > 1:
+        ls = []
+        for x in arr:
+            dist = np.max(x, axis=axis)-np.min(x, axis=axis)
+            if dist<1e-8:
+                res = np.zeros_like(x)
+            else:
+                res = (x-np.min(x, axis=axis))/dist
+            ls.append(res)
+        return np.array(ls)
+    else:
+        x = (arr-np.min(arr, axis=axis))/(np.max(arr, axis=axis)-np.min(arr, axis=axis))
+        return x
+
+
+```
+
+```{python}
+x = ps_expression[0, :]
+x_interp = np.linspace(min(ps_expression[0,:]), max(ps_expression[0,:]-0.1), 100)
+smoothed_data = np.zeros((ps_expression.shape[0], 100))
+coff_data = np.zeros((ps_expression.shape[0], 5))
+for idx, ll in tqdm(enumerate(ps_expression)):
+  y_interp, coff = zero_adjust_fit(x, ll, x_interp)
+  smoothed_data[idx, :] = y_interp
+  coff_data[idx, :] = coff
+
+sort_idx = np.argsort(np.argmax(smoothed_data[1:], axis=1))
+
+```
+
+```{python}
+plt.clf()
+
+heatmap_data = maxmin_scale(smoothed_data[(sort_idx+1),:])[1: ]
+sorted_gene_names = np.array(gene_names)[(sort_idx+1)][1: ]
+
+
+output_df = pd.DataFrame(heatmap_data, index=sorted_gene_names)
+output_df.to_csv('./data_tables/sorted_gene_names_pseudotime_heatmap.csv')
+
+gene_idx=[]
+genes_of_interest = r.genes_of_interest
+for i in genes_of_interest:
+  gene_idx.append(np.where(sorted_gene_names==i)[0][0])
+
+# genes_of_interest = sorted_gene_names
+# gene_idx = np.arange(len(genes_of_interest))
+
+
+fig = plt.figure(figsize=(10,10),dpi=256)
+gs = fig.add_gridspec(18,12)
+ax1 = fig.add_subplot(gs[1:, :-1])
+
+# main heatmap
+ax1.imshow(heatmap_data, vmin=0, vmax=1, aspect='auto', cmap='viridis')
+ax1.set_xlabel("Pseudotime")
+# ax1.set_xticks([])
+ax1.set_yticks(gene_idx, labels=genes_of_interest)
+# gene_names
+cluster_color_mix = r.cluster_color_mix
+cluster_color_mix['weight'] = cluster_color_mix['celltype'].map({"PC":0,"DB":0.5,"DT":1})
+
+ls = []
+for lower, upper in zip(x_interp[0:-1],x_interp[1:]):
+  ls.append(np.mean(cluster_color_mix[(cluster_color_mix['pseudotime']>=lower) & (cluster_color_mix['pseudotime']<upper)]['weight']))
+
+for idx in range(len(ls)):
+  if np.isnan(ls[idx]):
+    if idx>0:
+      ls[idx] = ls[idx-1]
+    elif idx==0:
+      ls[idx] = np.where(np.isnan(ls[idx+1]),0, ls[idx+1])
+  
+cmap = LinearSegmentedColormap.from_list('my_cmap', [(0, "#b1d6fb"), (0.5, "#e2b398"), (1, "#e2a2ca")]) # FOR Colormapping, see the message in wrappers
+props = ls
+blended_colors = cmap(props)
+
+ax3 = fig.add_subplot(gs[0, :-1])
+ax3.imshow([blended_colors], aspect='auto', cmap=cmap)
+ax3.set_axis_off()
+ax3.set_title("clusters")
+
+
+plt.savefig("./pseudotime_heatmap_ctrl_PCDBDT.png")
+plt.show()
+```
