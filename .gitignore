@@ -1,0 +1,4 @@
+*.crdownload
+temp/*
+*.Rmd
+*.html
