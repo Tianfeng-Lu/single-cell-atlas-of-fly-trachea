@@ -4,9 +4,14 @@ Li Y, Lu T, Dong P, Chen J, Zhao Q, Wang Y, Xiao T, Wu H, Zhao Q and Huang H. A 
 
 The processed data files are available with [doi: 10.5281/zenodo.10139562](https://doi.org/10.5281/zenodo.10139562) for reproducing main figures in the article and further exploration. You can start anywhere after loading `.rds` files with the same name as dependent variables.
 
+## Source data
+### download from zenodo
+`download_data.r` provides a pipeline for downloading the raw data and processed data from zenodo.
+
+
 ## Single cell RNA-seq analysis
 ### Preprocess
-`preprocess.R` transforms output from cellranger to seurat objects with cell type annotation. It keeps main components in trachea and split to filtered ctrl and HSD data, which will be used in downstream analyses.  
+`preprocess.R` transforms CellRanger output to Seurat objects with cell type annotation. It keeps main components in trachea and split to filtered ctrl and HSD data which will be used in the downstream analyses.  
 
 Saved files: 
 1. fly_merge_filtered.rds 
@@ -17,7 +22,7 @@ Saved files:
 
 ### Overview: Gene expression and cell population visualization 
 `10x figures.r` provides an overview for our scRNA-seq data, in which we explore gene expression heterogeneity in different cell population.
-To run it, you need ctrl_filtered and HSD_filtered in environment.
+It needs ctrl_filtered and HSD_filtered in the R environment.
 
 
 ### Analysis for differential expression genes
@@ -44,7 +49,7 @@ To further explore gene expression heterogeneity within a cell population, we ex
 
 ### RNA velocity
 RNA velocity analysis via python package `scvelo`, input file is `ctrl_velo.h5ad`.
-
+The code is available in `scvelo.ipynb`.
 
 ## Bulk RNA-seq analysis
 `./bulk RNA-seq/CodeForTimeDifferentialAnalysis.Rmd` provides a pipeline to process bulk RNA-seq raw data via DESeq2. And then performs ORA for DEGs upregulated when L3 -> 0hr. 
@@ -52,7 +57,7 @@ RNA velocity analysis via python package `scvelo`, input file is `ctrl_velo.h5ad
 
 ## Utils
 ### UpSetR
-Upset plot in R with modification to plot precentage rather than counts.
+Upset plot in R with modification to plot percentage rather than counts.
 To enable it
 ```
 devtools::load_all("./UpSetR-master", export_all = TRUE)
