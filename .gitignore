@@ -5,3 +5,4 @@ temp/*
 *.rds
 *.h5ad
 *.zip
+.Rhistory
