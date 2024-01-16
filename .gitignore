@@ -1,6 +1,5 @@
 *.crdownload
 temp/*
-*.html
 .Rproj.user
 *.rds
 *.h5ad
