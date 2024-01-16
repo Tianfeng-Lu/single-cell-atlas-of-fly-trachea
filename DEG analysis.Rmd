@@ -1,0 +1,129 @@
+---
+output: html_notebook
+---
+# differential expression genes
+
+```{r}
+source("./cleanRwrappers.R")
+library(clusterProfiler)
+```
+
+
+```{r}
+fly_merge_filtered <- readRDS("./fly_merge_filtered.rds")
+Idents(fly_merge_filtered) <- fly_merge_filtered$orig.ident
+fly_merge_filtered <-
+  RenameIdents(fly_merge_filtered,
+               '1' = 'ctrl',
+               '2' = 'HSD',
+               '3' = 'HSD')
+fly_merge_filtered$condition <- Idents(fly_merge_filtered)
+
+
+# single cell volcano plot in fig 7, compare ND vs HSD within each cluster
+Idents(fly_merge_filtered) <- fly_merge_filtered$condition
+res <-
+  lapply(unique(fly_merge_filtered$celltype), function(x) {
+    fly_DEGs <-
+      FindMarkers(
+        subset(fly_merge_filtered, celltype == x),
+        ident.1 = "HSD",
+        ident.2 = "ctrl",
+        test.use = "wilcox",
+        logfc.threshold = 0.5,
+        min.pct = 0.1,
+        min.diff.pct = 0.1,
+        only.pos = F,
+        pseudocount.use = 0
+      )
+    fly_DEGs$diff.pct <- fly_DEGs$pct.1 - fly_DEGs$pct.2
+    fly_DEGs$gene <- rownames(fly_DEGs)
+    fly_DEGs$cluster <- x
+    return(fly_DEGs)
+  }) 
+
+merged_result <- Reduce(rbind, res)
+
+# set boundary and p cutoff
+merged_result <-
+  merged_result %>% filter(p_val_adj < 0.05) %>% filter(!(cluster %in% c("ASP", "GB")))
+merged_result$avg_log2FC[merged_result$avg_log2FC > 4] <- 4
+merged_result$avg_log2FC[merged_result$avg_log2FC < -merged_result2] <- -2
+```
+
+
+```{r}
+source("./scVolcano.R")
+scVolcano(
+  merged_result,
+  annoH = 0.3,
+  myMarkers = c(
+    "fng",
+    "kud",
+    "E(spl)m2-BFM",
+    "
+E(spl)m3-HLH",
+    "E(spl)m7-HLH",
+    "Tom"
+  ),
+  topGeneN = 3,
+  seed = 143
+)
+```
+
+
+```{r}
+# Notch related pathways are enriched in ORA
+library(org.Dm.eg.db)
+selected_genes <- unique(merged_result$gene)
+genes <-
+  bitr(
+    selected_genes,
+    fromType = "SYMBOL",
+    toType = c("ENTREZID", "ENSEMBL"),
+    OrgDb = org.Dm.eg.db
+  )
+ 
+enrich.go <- enrichGO(
+  gene = genes$ENTREZID,
+  OrgDb = org.Dm.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",
+  pAdjustMethod = "fdr",
+  pvalueCutoff = 0.05,
+  qvalueCutoff = 0.01,
+  readable = TRUE
+)
+
+
+df1 <- compute_enrichment_factor(enrich.go)
+
+ggplot(
+  df1 %>% filter(
+    ID %in% c(
+      'GO:0045747',
+      'GO:0007219',
+      'GO:0008593',
+      'GO:0035330',
+      'GO:0032869'
+    )
+  ) %>% arrange(desc(enrichment_factor)),
+  aes(
+    x = enrichment_factor,
+    y = factor(Description, levels = rev(Description)),
+    fill = p.adjust
+  )
+) + geom_col() + scale_fill_gradient(low = "#fd9999", high = "#b1d6fb") +
+  xlim(0, NA) + labs(x = "enrichment factor", y = "Notch related GO terms") + theme_bw()  +
+  theme(
+    text = element_text(colour = "black", size = 16),
+    plot.title = element_text(
+      size = 16,
+      color = "black",
+      hjust = 0.5
+    ),
+    axis.title = element_text(size = 16, color = "black"),
+    axis.text = element_text(size = 16, color = "black"),
+    panel.grid = element_blank()
+  ) 
+```

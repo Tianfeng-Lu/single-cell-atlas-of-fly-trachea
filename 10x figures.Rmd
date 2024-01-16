@@ -1,6 +1,8 @@
 ---
 title: "10x figures"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 # main analyses for 10x sequence data
 
@@ -52,7 +54,7 @@ Dotplot(c("bs","mirr","bru2","wun"), ctrl_filtered) + xlab("Gene") + ylab("Cell 
 
 # upset plot
 ```{r}
-# fly_merge_filtered <- readRDS("./fly_merge_filtered.rds")
+fly_merge_filtered <- readRDS("./fly_merge_filtered.rds")
 
 devtools::load_all("./UpSetR-master", export_all = TRUE)
 Idents(ctrl_filtered) <- ctrl_filtered$celltype
@@ -97,10 +99,10 @@ Data_summary <- Rmisc::summarySE(merge_expr_melt, measurevar="value", groupvars=
 ggplot(merge_expr_melt,aes(x = variable, y = value, fill = condition)) +
   geom_split_violin(trim=T, color="white", scale = "area") + 
   geom_point(data = Data_summary,aes(x = variable, y = value), pch=19,
-             position=position_dodge(0.2), size = 1) + #绘制均值位置
+             position=position_dodge(0.2), size = 1) +
   geom_errorbar(data = Data_summary, aes(ymin = value-ci, ymax = value+ci), 
                 width = 0.05, 
-                position= position_dodge(0.2), #误差线位置，和均值位置相匹配
+                position= position_dodge(0.2),
                 color="black",
                 alpha = 0.7,
                 size= 0.5) + 

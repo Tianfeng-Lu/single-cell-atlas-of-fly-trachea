@@ -6,3 +6,4 @@ temp/*
 *.h5ad
 *.zip
 .Rhistory
+fly_merge/

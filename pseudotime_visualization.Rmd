@@ -9,7 +9,7 @@ source("cleanRwrappers.R")
 # visualization for pseudotime analysis
 ```{r}
 PC_DB_DT <- readRDS("./PC_DB_DT_seurat.rds")
-
+ctrl_filtered <- readRDS("./ctrl_filtered.rds")
 color_mapping <- colors_list[1:9]
 names(color_mapping) <- ctrl_filtered$celltype %>% levels()
 ```
@@ -30,7 +30,7 @@ ggplot(data,aes(x=pseudotime, y = `kni`)) + geom_point(aes(color = cluster),alph
 library(viridis)
 cds <- readRDS("./PC_DB_DT_cds.rds")
 pr_test_res <- monocle3::graph_test(cds, neighbor_graph="principal_graph", cores=4)
-time_diff_genes <- pr_test_res %>% filter(p_value<0.001 & q_value<0.001) %>% rownames() %>% intersect(PC_DB_DT@assays[["SCT"]]@var.features)
+time_diff_genes <- pr_test_res %>% dplyr::filter(p_value<0.001 & q_value<0.001) %>% rownames() %>% intersect(PC_DB_DT@assays[["SCT"]]@var.features)
 PC_DB_DT@active.assay <- "RNA"
 
 pseudotemporal_expression <- FetchData(PC_DB_DT, c("pseudotime", time_diff_genes)) %>% arrange(pseudotime) 
