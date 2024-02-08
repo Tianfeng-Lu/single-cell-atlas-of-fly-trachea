@@ -27,8 +27,8 @@ It needs ctrl_filtered and HSD_filtered in the R environment.
 
 ### Analysis for differential expression genes
 DEG analysis is implemented in `DEG analysis.R`.
-figures:
-    single cell volcano plot compares gene expression in  within each cell cluster
+figures:  
+    single cell volcano plot compares gene expression in  within each cell cluster   
     ORA shows Notch related pathways are enriched in ND vs HSD
 
 ### Pseudotime
